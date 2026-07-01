@@ -1,0 +1,6 @@
+# Plugin 运行时产物
+*.log
+.crash
+.current-session
+.backup-changes
+.claude/

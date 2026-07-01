@@ -1,0 +1,18 @@
+{
+  "name": "claudecode-context-plugin",
+  "version": "2.0.0",
+  "description": "Claude Code 会话生命周期管理 — 集成 Continuum 崩溃恢复 + 取证日志 + 红线守卫 + 备份归档。SessionStart 上下文注入, PostToolUse 全量取证/WIP自动保存, Stop 完整性检查/自动检查点",
+  "author": { "name": "13" },
+  "license": "MIT",
+  "homepage": "https://github.com/13/ClaudeCode-ContextPlugin",
+  "repository": "https://github.com/13/ClaudeCode-ContextPlugin",
+  "keywords": ["claude-code", "context", "session", "lifecycle", "crash-recovery", "backup", "hooks", "chinese"],
+  "credits": {
+    "continuum": {
+      "name": "Continuum",
+      "author": "Marylin Alarcon",
+      "url": "https://github.com/marylin/Continuum",
+      "license": "MIT"
+    }
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "description": "ClaudeCode-ContextPlugin — 会话生命周期管理: SessionStart 上下文注入+活跃检测、PostToolUse 取证日志+红线守卫+WIP自动保存、Stop 完整性检查+检查点",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/detect-active-work.sh\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/track-file-change.sh\"",
+            "timeout": 2
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/wip-auto-save.sh\"",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/track-commit.sh\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/exit-check.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/scripts/auto-checkpoint.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
