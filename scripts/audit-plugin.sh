@@ -278,8 +278,8 @@ for f in $ALL_SHELL; do
 done
 [ "$NO_SHEBANG" -eq 0 ] && good "所有脚本有 shebang" || warn "$NO_SHEBANG 个脚本缺 shebang"
 
-# 规则 3: 不使用硬编码路径 (E:/ 等)
-HARDCODED=$(grep -l 'E:/' $ALL_SHELL 2>/dev/null || true)
+# 规则 3: 不使用硬编码路径 (E:/ 等) — 排除审计脚本自身
+HARDCODED=$(grep -l 'E:/' $ALL_SHELL 2>/dev/null | grep -v "audit-plugin" || true)
 if [ -z "$HARDCODED" ]; then
   good "无硬编码 E:/ 路径"
 else
