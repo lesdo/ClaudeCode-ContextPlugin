@@ -64,6 +64,14 @@ if [ ! -d "$MEMORY_DIR" ]; then
 "
 fi
 
+BRIEFING_DIR="$CONTEXT_DIR/briefing"
+if [ ! -d "$BRIEFING_DIR" ]; then
+  mkdir -p "$BRIEFING_DIR"
+  initialized=1
+  items="$items  ✓ .claude/context/briefing/
+"
+fi
+
 if [ ! -f "$SETTINGS_LOCAL" ]; then
   echo '{}' > "$SETTINGS_LOCAL"
   initialized=1
@@ -341,6 +349,8 @@ else
   fi
 fi
 
+BRIEFING_FILE="$CONTEXT_DIR/briefing/active.md"
+
 if [ "$MCP_HEALTH" = "ok" ]; then
   # bug#2: mark crash residues as abandoned (auto-skips when only 1 active)
   RESULT=$(bash "$MCP_CLI" "$PROJECT_DIR" session_mark_abandoned 2>/dev/null || echo "{}")
@@ -350,13 +360,16 @@ if [ "$MCP_HEALTH" = "ok" ]; then
     echo "WARN_DB: ${ABANDONED_COUNT} old sessions marked abandoned"
   fi
 
-  # 简报注入 (Tier 1, <=500 tokens)
+  # 简报注入 + 落盘到文件 (Tier 1, <=500 tokens)
   BRIEFING=$(bash "$MCP_CLI" "$PROJECT_DIR" briefing_generate 2>/dev/null)
   if [ -n "$BRIEFING" ] && [ "$BRIEFING" != "null" ]; then
     echo ""
     echo "=== 会话简报 (DB) ==="
     echo "$BRIEFING"
     echo ""
+    # 写入文件供 PreCompact/PostCompact 使用
+    mkdir -p "$(dirname "$BRIEFING_FILE")"
+    echo "$BRIEFING" > "$BRIEFING_FILE"
   fi
 
   # DB 统计速览
@@ -364,6 +377,13 @@ if [ "$MCP_HEALTH" = "ok" ]; then
   DB_SESSIONS=$(echo "$DB_STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_sessions','?'))" 2>/dev/null)
   DB_MEMS=$(echo "$DB_STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_memories','?'))" 2>/dev/null)
   echo "DB 速览: ${DB_SESSIONS:-?} 会话, ${DB_MEMS:-?} 记忆"
+elif [ -f "$BRIEFING_FILE" ] && [ -s "$BRIEFING_FILE" ]; then
+  # DB 不可用时的文件 fallback
+  echo ""
+  echo "=== 会话简报（文件缓存）==="
+  cat "$BRIEFING_FILE"
+  echo ""
+  echo "⚠ 以上为上次缓存，DB 不可用时使用。"
 fi
 
 # ============================================================
