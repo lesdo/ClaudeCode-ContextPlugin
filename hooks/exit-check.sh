@@ -29,16 +29,17 @@ fi
 
 # ── 最新会话文件 ────────────────────────────
 # 优先从 .current-session 指针读取（session-start.sh 已写入），O(1)
+LATEST=""
 CURRENT_PTR="$SESSIONS_DIR/.current-session"
 if [ -f "$CURRENT_PTR" ]; then
   LATEST=$(cat "$CURRENT_PTR" 2>/dev/null)
 fi
 # 回退：指针不存在时用 ls（兼容旧会话目录）
-if [ -z "$LATEST" ] || [ ! -f "$LATEST" ]; then
-  LATEST=$(ls -t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | head -1)
+if [ -z "${LATEST:-}" ] || [ ! -f "${LATEST:-}" ]; then
+  LATEST=$(ls -t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | head -1) || LATEST=""
 fi
 
-if [ -z "$LATEST" ]; then
+if [ -z "${LATEST:-}" ]; then
   echo "STATE: no_sessions"
   echo "SESSION_DIR: ${SESSIONS_DIR}"
   exit 0

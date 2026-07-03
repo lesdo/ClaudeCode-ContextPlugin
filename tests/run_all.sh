@@ -11,6 +11,9 @@ TESTS=(
   "validate_hooks_json.sh:L1 hooks.json"
   "test_common.sh:L2 _common.sh"
   "test_post_tool.sh:L2 post-tool"
+  "test_session_start.sh:L2 session-start"
+  "test_exit_check.sh:L2 exit-check"
+  "test_mcp_cli.sh:L2 mcp-cli"
   "test_e2e.sh:L2 E2E 全流程"
 )
 

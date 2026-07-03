@@ -6,7 +6,7 @@ argument-hint: [project path]
 
 # Initialize Project
 
-Bootstrap this project with a CLAUDE.md and `.lifecycle/` directory for continuum workflow.
+Bootstrap this project with a CLAUDE.md and `.lifecycle/` directory for the context plugin workflow.
 
 ## Step 1: Scan (no changes yet)
 
