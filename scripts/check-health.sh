@@ -1,5 +1,6 @@
 #!/bin/bash
 # 系统健康检查 — 验证脚本、配置、目录完整性
+set -euo pipefail
 # 手动运行，不进 hook 链
 # 用法: bash check-health.sh [项目目录]
 

@@ -1,5 +1,6 @@
 #!/bin/bash
 # Claude Code 用户配置备份（全量 + 黑名单 + 新条目检测 + 过期清理）
+set -euo pipefail
 # 用法:
 #   bash backup-claude.sh [变更说明]    # 备份 + 自动清理过期
 #   bash backup-claude.sh --clean        # 仅清理过期备份

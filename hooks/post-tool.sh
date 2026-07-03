@@ -1,5 +1,6 @@
 #!/bin/bash
 # PostToolUse hook — 合并: 取证日志(auto-log) + 配置守护(guard)
+set -euo pipefail
 # 单次 stdin 解析，顺序执行，纯 bash，零外部依赖
 # 测试: echo '{"tool_name":"Edit","tool_input":{"file_path":"'$HOME'/.claude/CLAUDE.md"}}' | bash ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool.sh [项目目录]
 

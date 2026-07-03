@@ -1,5 +1,6 @@
 #!/bin/bash
 # memory-capture.sh — Stop hook: 分析会话→提取记忆→写入 SQLite
+set -euo pipefail
 # 替代 AI 手动填充会话文件 (bug#6)
 # 清理 .current-session 指针 (bug#3)
 #

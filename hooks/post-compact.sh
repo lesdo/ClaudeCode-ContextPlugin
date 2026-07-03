@@ -1,5 +1,6 @@
 #!/bin/bash
 # post-compact.sh — PostCompact hook: 从文件 + DB 恢复关键上下文
+set -euo pipefail
 # 文件优先（compaction 前 pre-compact 写入，compaction 后必然存在）
 # DB 作为补充（可能有更新的数据）
 CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"

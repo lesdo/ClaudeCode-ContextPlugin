@@ -1,5 +1,6 @@
 #!/bin/bash
 # session-archive.sh — 会话按月归档
+set -euo pipefail
 # 将超过阈值的 .md + .log 会话文件移入 archive/YYYY-MM/
 # 用法: bash ~/.claude/tools/session-archive.sh <sessions_dir> [days=30]
 

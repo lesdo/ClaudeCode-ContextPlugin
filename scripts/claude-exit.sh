@@ -1,5 +1,6 @@
 #!/bin/bash
 # 退出 — 终止 Claude 进程
+set -euo pipefail
 # 前提: AI 应先运行 exit-check.sh 确认会话完整性
 # 用法:
 #   bash claude-exit.sh [项目目录] [PID]

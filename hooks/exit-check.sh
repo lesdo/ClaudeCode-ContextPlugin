@@ -1,5 +1,6 @@
 #!/bin/bash
 # 退出前检查 — 查询会话完整性，输出状态事实
+set -euo pipefail
 # 纯查询，无副作用，始终 exit 0
 # 用法: bash ~/.claude/tools/exit-check.sh [项目目录]
 # 测试: bash ~/.claude/tools/exit-check.sh [项目目录]

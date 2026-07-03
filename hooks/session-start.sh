@@ -1,5 +1,6 @@
 #!/bin/bash
 # SessionStart hook — 项目初始化 + 画像/规则/上下文注入 + 会话状态/管理规则
+set -euo pipefail
 # 合并 project-init.sh + context-inject.sh + session-rules.sh，单一入口，单一 source
 # 测试: bash ~/.claude/tools/session-start.sh [项目目录]
 

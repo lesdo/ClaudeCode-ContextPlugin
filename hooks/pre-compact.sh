@@ -1,5 +1,6 @@
 #!/bin/bash
 # pre-compact.sh — PreCompact hook: 简报快照到 DB + 落盘到文件
+set -euo pipefail
 # 文件落盘确保 compaction 后上下文存活（即使 DB 不可用）
 CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/_common.sh"
