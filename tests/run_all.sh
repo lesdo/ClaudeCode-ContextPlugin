@@ -14,6 +14,8 @@ TESTS=(
   "test_session_start.sh:L2 session-start"
   "test_exit_check.sh:L2 exit-check"
   "test_mcp_cli.sh:L2 mcp-cli"
+  "test_memory_capture.sh:L2 memory-capture"
+  "test_compact.sh:L2 compact hooks"
   "test_e2e.sh:L2 E2E 全流程"
 )
 
