@@ -610,6 +610,37 @@ def stats_overview(project_dir: Optional[str] = None) -> dict:
             return dict(row)
         return {}
 
+def session_stats(project_dir: Optional[str] = None) -> dict:
+    """Get session counts by status (replaces session_index_read)."""
+    with get_db(project_dir) as conn:
+        total = conn.execute("SELECT COUNT(*) as c FROM sessions").fetchone()['c']
+        complete = conn.execute(
+            "SELECT COUNT(*) as c FROM sessions WHERE status='completed'"
+        ).fetchone()['c']
+        skeleton = conn.execute(
+            "SELECT COUNT(*) as c FROM sessions WHERE status IN ('active','abandoned')"
+        ).fetchone()['c']
+        return {"total": total, "complete": complete, "skeleton": skeleton}
+
+def session_find_status(project_dir: Optional[str] = None,
+                        date: str = "",
+                        time_val: str = "") -> str:
+    """Find session status by date+time (replaces session_index_find).
+    Returns 'complete', 'skeleton', or 'unknown'."""
+    with get_db(project_dir) as conn:
+        row = conn.execute(
+            "SELECT status FROM sessions WHERE date=? AND time=? ORDER BY created_at DESC LIMIT 1",
+            (date, time_val)
+        ).fetchone()
+        if not row:
+            return "unknown"
+        status = row['status']
+        if status == 'completed':
+            return "complete"
+        elif status in ('active', 'abandoned'):
+            return "skeleton"
+        return "unknown"
+
 # Briefing operations
 
 def briefing_generate(project_dir: Optional[str] = None,

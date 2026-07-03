@@ -245,20 +245,8 @@ EXITEOF
   fi
 fi
 
-# Phase B: DB 会话结束（由 memory-capture.sh Stop hook 处理，此处不再重复调用）
-
-# --- 3.5 追加会话索引 + 写入闭环校验（meta.redline 7c）---
-SESSION_STATUS="complete"
-grep -q "（待填充）" "$SESSION_FILE" 2>/dev/null && SESSION_STATUS="skeleton"
-session_index_append "$CONTEXT_DIR/sessions" "$SESSION_DATE" "$SESSION_TIME" "$SESSION_STATUS"
-
-# 写入后立即读回校验（禁止 fire-and-forget）
-VERIFY_STATUS=$(session_index_find "$CONTEXT_DIR/sessions" "$SESSION_DATE" "$SESSION_TIME")
-if [ "$VERIFY_STATUS" = "$SESSION_STATUS" ]; then
-  echo "  会话索引: ${SESSION_DATE}_${SESSION_TIME} (${SESSION_STATUS}) ✓"
-else
-  echo "  会话索引: ${SESSION_DATE}_${SESSION_TIME} 写入失败！(预期=${SESSION_STATUS}, 读到=${VERIFY_STATUS})" >&2
-fi
+# Phase D: 会话索引由 SQLite sessions 表替代（session_create 已写入，session_finalize 更新状态）
+# .session-index 不再追加。历史索引保留供兜底查询。
 
 # --- 3.6 归档旧会话（30天前移入 archive/YYYY-MM/）---
 SESSION_ARCHIVE_DAYS="${session_archive_days:-30}"

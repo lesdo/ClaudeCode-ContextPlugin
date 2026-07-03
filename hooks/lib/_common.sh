@@ -94,9 +94,8 @@ snapshot_config() {
   done > "$target"
 }
 
-# ── 会话索引操作（轻量，纯 shell，零外部依赖）────
-# 索引文件: $SESSIONS_DIR/.session-index
-# 格式: JSONL，每行 {"date":"YYYY-MM-DD","time":"HHMM","status":"complete|skeleton"}
+# ── 会话索引操作 (Phase D: deprecated, 由 SQLite sessions 表替代) ──
+# 保留供 MCP 不可用时的兜底查询。不再写入新条目。
 
 session_index_append() {
   local dir="$1" date="$2" time="$3" status="$4"

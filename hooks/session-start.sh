@@ -230,41 +230,39 @@ fi
 # 历史会话（排除当前）
 HISTORICAL=$(echo "$SESSION_FILES" | sed -n '2,$p')
 
-# ── 索引初始化（不依赖是否有历史会话）──
-SESSION_INDEX="$SESSIONS_DIR/.session-index"
+# ── 会话统计 (Phase D): SQLite session_stats 优先，.session-index 兜底 ──
+HIST_TOTAL=0; HIST_COMPLETE=0; HIST_SKELETON=0
 
-# 当前会话基础名（不含 .md 后缀，供 migrate/reconcile 跳过用）
-CURRENT_BASE="${CURRENT_NAME%.md}"
-
-if [ ! -f "$SESSION_INDEX" ]; then
-  # 首次运行：从现有会话文件一次性迁移构建索引（跳过当前会话）
-  MIGRATED=$(session_index_migrate "$SESSIONS_DIR" "$CURRENT_BASE")
-  if [ "$MIGRATED" -gt 0 ] 2>/dev/null; then
-    echo "  （会话索引已构建: ${MIGRATED} 条记录）"
-  fi
+if [ "$MCP_HEALTH" = "ok" ]; then
+  STATS_JSON=$(bash "$MCP_CLI" "$PROJECT_DIR" session_stats 2>/dev/null || echo "{}")
+  HIST_TOTAL=$(echo "$STATS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total',0))" 2>/dev/null || echo "0")
+  HIST_COMPLETE=$(echo "$STATS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('complete',0))" 2>/dev/null || echo "0")
+  HIST_SKELETON=$(echo "$STATS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('skeleton',0))" 2>/dev/null || echo "0")
+else
+  # 兜底: .session-index (旧方式)
+  read HIST_TOTAL HIST_COMPLETE HIST_SKELETON <<< $(session_index_read "$SESSIONS_DIR")
 fi
-
-# ── 文件系统→索引修复（处理 wrapper 被中断导致的孤儿会话）
-RECONCILED=$(session_index_reconcile "$SESSIONS_DIR" "$CURRENT_BASE")
-read REC_ADDED REC_COMPLETE REC_SKELETON <<< "$RECONCILED"
-if [ "$REC_ADDED" -gt 0 ] 2>/dev/null; then
-  echo "  （孤儿会话已修复: ${REC_ADDED} 条缺失索引已补录）"
-fi
-
-# 从索引读取统计
-read HIST_TOTAL HIST_COMPLETE HIST_SKELETON <<< $(session_index_read "$SESSIONS_DIR")
 
 if [ -z "$HISTORICAL" ]; then
   echo "历史会话: 无"
 else
   echo "历史会话: 共 $HIST_TOTAL，已记录 $HIST_COMPLETE，仅骨架 $HIST_SKELETON"
 
-  # 上次会话（ID 精确查询索引，禁止 tail -1 位置推断 — meta.redline 7a）
+  # 上次会话
   PREV_SESSION=$(echo "$HISTORICAL" | head -1)
   PREV_NAME=$(basename "$PREV_SESSION")
   PREV_DATE="${PREV_NAME:0:10}"
   PREV_TIME="${PREV_NAME:11:6}"
-  PREV_STATUS=$(session_index_find "$SESSIONS_DIR" "$PREV_DATE" "$PREV_TIME")
+
+  # 查询状态: SQLite 优先，索引兜底
+  if [ "$MCP_HEALTH" = "ok" ]; then
+    PREV_STATUS=$(bash "$MCP_CLI" "$PROJECT_DIR" session_find_status \
+      "{\"date\":\"$PREV_DATE\",\"time_val\":\"$PREV_TIME\"}" 2>/dev/null || echo "unknown")
+    # 清理 JSON 引号
+    PREV_STATUS=$(echo "$PREV_STATUS" | tr -d '"')
+  else
+    PREV_STATUS=$(session_index_find "$SESSIONS_DIR" "$PREV_DATE" "$PREV_TIME")
+  fi
   if [ "$PREV_STATUS" = "skeleton" ]; then
     echo ""
     echo "⚠ 上次会话未记录上下文！"
