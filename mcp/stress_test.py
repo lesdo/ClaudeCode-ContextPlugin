@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
 压力测试脚本 — 验证上下文管理系统全部功能
-用法: python stress_test.py [project_dir]
-默认: E:/Files/ClaudeCode-测试目录
+用法: python3 mcp/stress_test.py [project_dir]
 """
 
-import sys, os, json, time, random
+import sys, os, json, time, random, tempfile
 
-TEST_DIR = sys.argv[1] if len(sys.argv) > 1 else 'E:/Files/ClaudeCode-测试目录'
-sys.path.insert(0, 'E:/Files/ClaudeCode-ContextPlugin/mcp')
+TEST_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), 'context-plugin-stress')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from db_core import ensure_schema, get_db_path
 from db_ops import (

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 交互式演示 — 展示 v3.0 上下文管理系统的完整工作流程
-运行: python3 E:/Files/ClaudeCode-ContextPlugin/mcp/demo.py
+运行: python3 mcp/demo.py [测试目录]
 """
 
-import sys, os, time
-sys.path.insert(0, 'E:/Files/ClaudeCode-ContextPlugin/mcp')
+import sys, os, time, tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-TEST_DIR = 'E:/Files/ClaudeCode-测试目录'
+TEST_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), 'context-plugin-demo')
 
 from db_core import ensure_schema, get_db_path
 from db_ops import *
