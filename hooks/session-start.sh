@@ -314,13 +314,34 @@ else
 fi
 
 # ============================================================
-# Phase B: SQLite 集成 — 会话状态 + 简报注入
+# Phase B: SQLite 集成 — 健康哨兵 + 会话状态 + 简报注入
 # ============================================================
 MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
-if [ -x "$MCP_CLI" ] 2>/dev/null; then
-  # 确保 DB schema
-  bash "$MCP_CLI" "$PROJECT_DIR" ensure_schema 2>/dev/null || true
+MCP_HEALTH="unknown"
 
+if [ ! -x "$MCP_CLI" ] 2>/dev/null; then
+  echo ""
+  echo "⚠ MCP: mcp-cli.sh 不可用（文件缺失或无执行权限）"
+  MCP_HEALTH="missing"
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo ""
+  echo "⚠ MCP: python3 未安装 — SQLite 管线不可用"
+  MCP_HEALTH="no_python"
+else
+  # ── 健康哨兵: 快速验证 Python + MCP + DB 可用性 ──
+  HEALTH_OUT=$(bash "$MCP_CLI" "$PROJECT_DIR" ensure_schema 2>&1)
+  HEALTH_EXIT=$?
+  if [ $HEALTH_EXIT -ne 0 ]; then
+    echo ""
+    echo "⚠ MCP: SQLite 管线异常（ensure_schema 失败, exit=$HEALTH_EXIT）"
+    echo "  详情: ${HEALTH_OUT:-(无输出)}"
+    MCP_HEALTH="error"
+  else
+    MCP_HEALTH="ok"
+  fi
+fi
+
+if [ "$MCP_HEALTH" = "ok" ]; then
   # bug#2: mark crash residues as abandoned (auto-skips when only 1 active)
   RESULT=$(bash "$MCP_CLI" "$PROJECT_DIR" session_mark_abandoned 2>/dev/null || echo "{}")
   ABANDONED_COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rowcount',0))" 2>/dev/null || echo "0")
