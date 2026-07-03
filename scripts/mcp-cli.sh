@@ -27,5 +27,6 @@ if [ -z "$COMMAND" ]; then
   exit 1
 fi
 
-# 调用 Python（project_dir 和 args 各自独立传参，避免 shell 展开破坏 JSON）
+# 调用 Python（强制 UTF-8 输出，避免 Windows GBK 编码错误）
+export PYTHONIOENCODING=utf-8
 exec python3 "$SERVER" "$PROJECT_DIR" "$COMMAND" "$ARGS"

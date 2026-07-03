@@ -169,10 +169,12 @@ classify_exit_code() {
   esac
 }
 
-# --- 3. 会话文件更新：文件变更 + 退出信息 ---
+# --- 3. 会话文件编译 (Phase C): SQLite → Markdown ---
 END_TIME=$(date +%Y-%m-%dT%H:%M:%S+08:00)
 EXIT_LABEL=$(classify_exit_code "$EXIT_CODE")
-# 计算会话时长（纯 bash date +%s 算术，无需 python3）
+SESSION_SLUG="${SESSION_DATE}_${SESSION_TIME}"
+
+# 计算会话时长
 if [ -f "$SESSION_START_MARKER" ]; then
   START_EPOCH=$(stat -c %Y "$SESSION_START_MARKER" 2>/dev/null)
   END_EPOCH=$(date +%s)
@@ -183,18 +185,34 @@ fi
 
 echo "  会话时长: ${DURATION_MIN} 分钟"
 
-# 查找会话期间修改的文件（排除 .claude/、node_modules、.git 等）
-MODIFIED_FILES=""
-if [ -f "$SESSION_START_MARKER" ]; then
-  MODIFIED_FILES=$(find "$PROJECT_DIR" -newer "$SESSION_START_MARKER" -type f -not -path "*/.claude/*" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/__pycache__/*" -not -path "*/ClaudecodeBackup/*" 2>/dev/null | head -50 | sort)
+# 主路径: 从 SQLite 编译 .md
+SESSION_FILE="$CONTEXT_DIR/sessions/${SESSION_SLUG}.md"
+COMPILED=0
+MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
+
+if [ -x "$MCP_CLI" ] 2>/dev/null; then
+  COMPILED_JSON=$(bash "$MCP_CLI" "$PROJECT_DIR" session_compile_md \
+    "{\"slug\":\"$SESSION_SLUG\"}" 2>/dev/null || echo "")
+  if [ -n "$COMPILED_JSON" ] && [ "$COMPILED_JSON" != "null" ]; then
+    # JSON 字符串解码（python3 json.dumps 包装了 markdown）
+    echo "$COMPILED_JSON" | python3 -c "import sys,json; sys.stdout.write(json.load(sys.stdin))" > "$SESSION_FILE" 2>/dev/null
+    if [ -s "$SESSION_FILE" ]; then
+      COMPILED=1
+      echo "[wrapper] 会话文件已编译 (SQLite): sessions/${SESSION_SLUG}.md"
+    fi
+  fi
 fi
 
-# 用令牌查找会话文件（AI 可能已改名）
-SESSION_FILE=$(grep -l "token: ${SESSION_TOKEN}" "$CONTEXT_DIR/sessions/"*.md 2>/dev/null | head -1)
-if [ -n "$SESSION_FILE" ]; then
-  # 构建退出摘要，插入 ## 自动信息 段
-  EXIT_BLOCK_FILE=$(mktemp)
-  cat > "$EXIT_BLOCK_FILE" <<EXITEOF
+# 兜底: SQLite 不可用时保留原 sed 方式
+if [ "$COMPILED" -eq 0 ]; then
+  MODIFIED_FILES=""
+  if [ -f "$SESSION_START_MARKER" ]; then
+    MODIFIED_FILES=$(find "$PROJECT_DIR" -newer "$SESSION_START_MARKER" -type f -not -path "*/.claude/*" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/__pycache__/*" -not -path "*/ClaudecodeBackup/*" 2>/dev/null | head -50 | sort)
+  fi
+
+  if [ -f "$SESSION_FILE" ]; then
+    EXIT_BLOCK_FILE=$(mktemp)
+    cat > "$EXIT_BLOCK_FILE" <<EXITEOF
 - **结束时间**: ${END_TIME}
 - **退出码**: ${EXIT_CODE} (${EXIT_LABEL})
 - **时长**: ${DURATION_MIN} 分钟
@@ -209,19 +227,16 @@ else
   echo "（无文件变更）"
 fi)
 EXITEOF
-  if grep -q "（会话结束后自动填充）" "$SESSION_FILE" 2>/dev/null; then
-    sed -i "/（会话结束后自动填充）/{
-      r $EXIT_BLOCK_FILE
-      d
-    }" "$SESSION_FILE"
-  else
-    sed -i "/^## 自动信息/{
-      r $EXIT_BLOCK_FILE
-    }" "$SESSION_FILE"
+    if grep -q "（会话结束后自动填充）" "$SESSION_FILE" 2>/dev/null; then
+      sed -i "/（会话结束后自动填充）/{
+        r $EXIT_BLOCK_FILE
+        d
+      }" "$SESSION_FILE"
+    fi
+    rm -f "$EXIT_BLOCK_FILE"
+    echo "[wrapper] 会话文件已更新 (sed): sessions/${SESSION_SLUG}.md"
   fi
-  rm -f "$EXIT_BLOCK_FILE"
 
-  echo "[wrapper] 会话文件已更新: sessions/$(basename "$SESSION_FILE")"
   if [ -n "$MODIFIED_FILES" ]; then
     CHANGED_COUNT=$(echo "$MODIFIED_FILES" | wc -l)
     echo "  文件变更: ${CHANGED_COUNT} 个文件"

@@ -193,6 +193,107 @@ def session_events_by_slug(project_dir: Optional[str] = None,
         ).fetchall()
         return [dict(r) for r in rows]
 
+def session_compile_md(project_dir: Optional[str] = None,
+                       slug: str = "") -> str:
+    """Compile a complete session .md file from SQLite data (Phase C).
+    Returns markdown string ready to write to the session file."""
+    with get_db(project_dir) as conn:
+        # Session record
+        session = conn.execute(
+            "SELECT * FROM sessions WHERE slug=? ORDER BY created_at DESC LIMIT 1",
+            (slug,)
+        ).fetchone()
+        if not session:
+            return ""
+
+        # Events
+        events = conn.execute(
+            "SELECT timestamp, tool_name, tool_input_summary, file_path "
+            "FROM events WHERE session_id=? ORDER BY id",
+            (session['id'],)
+        ).fetchall()
+
+        # Build markdown
+        lines = []
+        lines.append(f"# {slug}")
+        lines.append("")
+        lines.append(f"<!-- token: {session['token_used'] or 'session-unknown'} -->")
+        lines.append("")
+        lines.append(f"**日期**: {session['date']}")
+        lines.append(f"**摘要**: {session['summary'] or '（待填充）'}")
+        lines.append(f"**PID**: {session['pid'] or '未知'}")
+        lines.append(f"**开始时间**: {session['start_time'] or '未知'}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # Auto info (from DB)
+        lines.append("## 自动信息")
+        lines.append("")
+        if session['end_time']:
+            lines.append(f"- **结束时间**: {session['end_time']}")
+            lines.append(f"- **退出码**: {session['exit_code'] or '?'}")
+            lines.append(f"- **时长**: {session['duration_min']} 分钟" if session['duration_min'] else "- **时长**: 未知")
+            lines.append(f"- **状态**: {'⚠ 异常退出' if session['status'] == 'abandoned' else '✅ 正常结束'}")
+        else:
+            lines.append("（会话未正常结束）")
+        lines.append("")
+
+        # Tool call records
+        lines.append("### 工具调用记录")
+        lines.append("")
+        if events:
+            lines.append(f"共 {len(events)} 次：")
+            lines.append("")
+            for e in events:
+                ts = e['timestamp'] or '??:??:??'
+                tool = e['tool_name'] or '?'
+                summary = (e['tool_input_summary'] or '-')[:80]
+                fp = e['file_path']
+                if fp:
+                    lines.append(f"- {ts} {tool} `{fp}` {summary}")
+                else:
+                    lines.append(f"- {ts} {tool} {summary}")
+        else:
+            lines.append("（无工具调用记录）")
+        lines.append("")
+
+        # File changes (from events with file_path)
+        changed_files = [e['file_path'] for e in events if e['file_path']]
+        lines.append("### 文件变更")
+        lines.append("")
+        if changed_files:
+            # deduplicate
+            seen = set()
+            unique_files = []
+            for f in changed_files:
+                if f not in seen:
+                    seen.add(f)
+                    unique_files.append(f)
+            for f in unique_files[:30]:
+                lines.append(f"- `{f}`")
+            if len(unique_files) > 30:
+                lines.append(f"- ... 及其他 {len(unique_files) - 30} 个文件")
+        else:
+            lines.append("（无文件变更记录）")
+
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # AI-fillable sections (preserved from existing .md if present)
+        lines.append("## 上下文")
+        lines.append("")
+        lines.append(session['context_summary'] or "（待填充）")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        lines.append("## 任务")
+        lines.append("")
+        lines.append("（待填充）")
+
+        return "\n".join(lines)
+
 # Event operations
 
 def event_log(project_dir: Optional[str] = None,

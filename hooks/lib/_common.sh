@@ -451,3 +451,49 @@ print('\n'.join(lines))
   rm -f "$auto_tmp"
   echo "$tool_count $severity $did_fill"
 }
+
+# ── 崩溃诊断 (Phase C): 纯查询，不修改文件 ──
+# 用法: crash_diagnose <session_slug> <project_dir> [context]
+# 输出: TOOL_COUNT SEVERITY（无 DID_FILL，不做 sed 注入）
+crash_diagnose() {
+  local slug="$1"
+  local project_dir="$2"
+  local context="${3:-skeleton}"
+  local tool_count=0 severity="L3"
+
+  # 尝试 SQLite
+  local mcp_cli="${CLAUDE_PLUGIN_ROOT:-$(dirname "$(dirname "${BASH_SOURCE[0]}")")}/scripts/mcp-cli.sh"
+  if [ -x "$mcp_cli" ] 2>/dev/null; then
+    local events_json
+    events_json=$(bash "$mcp_cli" "$project_dir" session_events_by_slug \
+      "{\"slug\":\"$slug\",\"limit\":200}" 2>/dev/null || echo "[]")
+    if [ "$events_json" != "[]" ] && [ -n "$events_json" ]; then
+      tool_count=$(echo "$events_json" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+      if [ "$tool_count" -gt 0 ] 2>/dev/null; then
+        severity="L2"
+        echo "$tool_count $severity"
+        return 0
+      fi
+    fi
+  fi
+
+  # 回退 .log
+  local session_md="$project_dir/.claude/context/sessions/${slug}.md"
+  local session_log="${session_md%.md}.log"
+  if [ -f "$session_log" ] && [ -s "$session_log" ]; then
+    local crash_line
+    crash_line=$(grep "^CRASH:" "$session_log" 2>/dev/null | tail -1)
+    tool_count=$(grep -cE "^- [0-9]{2}:[0-9]{2}:[0-9]{2} " "$session_log" 2>/dev/null || echo "0")
+
+    severity="L2"
+    if [ "$context" = "skeleton" ]; then
+      if [ -n "$crash_line" ]; then
+        if [ "$tool_count" -lt 5 ] 2>/dev/null; then severity="L1"; fi
+      elif [ "$tool_count" -eq 0 ] 2>/dev/null; then
+        severity="L3"
+      fi
+    fi
+  fi
+
+  echo "$tool_count $severity"
+}

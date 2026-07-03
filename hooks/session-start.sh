@@ -271,30 +271,19 @@ else
     echo "  文件: $PREV_NAME（仅骨架）"
 
     PREV_SLUG="${PREV_DATE}_${PREV_TIME}"
-    PREV_LOG="${PREV_SESSION%.md}.log"
-
-    # Phase B: DB 优先，.log 兜底
-    read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill_db "$PREV_SLUG" "$PREV_SESSION" "$PROJECT_DIR" "skeleton")
-    if [ "$PREV_SEVERITY" = "L3" ] && [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
-      read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill "$PREV_SESSION" "$PREV_LOG" "skeleton")
-    fi
+    read TOOL_COUNT PREV_SEVERITY <<< $(crash_diagnose "$PREV_SLUG" "$PROJECT_DIR" "skeleton")
 
     if [ "$PREV_SEVERITY" = "L3" ]; then
-      if [ ! -f "$PREV_LOG" ] || [ ! -s "$PREV_LOG" ]; then
-        echo "  状态: 骨架（无取证日志文件，DB 无记录）"
-      else
-        echo "  状态: 骨架（无取证数据可填充）"
-      fi
-    elif [ "$DID_FILL" = "1" ]; then
-      echo "  状态: ✅ 已自动填充 (${TOOL_COUNT} 次工具调用, 严重度 ${PREV_SEVERITY})"
+      echo "  状态: 骨架（无取证数据）"
     else
-      echo "  状态: 骨架（占位符已变更，跳过自动填充）"
+      echo "  状态: 诊断完成（${TOOL_COUNT} 次工具调用, 严重度 ${PREV_SEVERITY}）"
+      echo "  提示: .md 将在会话结束时从 SQLite 编译生成"
     fi
 
     # 输出严重度分级（供 AI 启动报告使用）
     case "${PREV_SEVERITY:-L3}" in
       L1) echo "  CRASH_SEVERITY: L1 — 短会话/少量操作，无实质损失" ;;
-      L2) echo "  CRASH_SEVERITY: L2 — 有取证数据，已自动填充，可恢复上下文" ;;
+      L2) echo "  CRASH_SEVERITY: L2 — 有取证数据可恢复，.md 编译后可查看" ;;
       L3) echo "  CRASH_SEVERITY: L3 — 数据缺失，需人工排查" ;;
     esac
   elif [ "$PREV_STATUS" = "complete" ]; then
@@ -305,30 +294,15 @@ else
     echo ""
 
     PREV_SLUG="${PREV_DATE}_${PREV_TIME}"
-    PREV_LOG="${PREV_SESSION%.md}.log"
+    read TOOL_COUNT PREV_SEVERITY <<< $(crash_diagnose "$PREV_SLUG" "$PROJECT_DIR" "unknown")
 
-    # Phase B: DB 优先，.log 兜底
-    read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill_db "$PREV_SLUG" "$PREV_SESSION" "$PROJECT_DIR" "unknown")
-    if [ "$DID_FILL" = "0" ] && [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
-      read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill "$PREV_SESSION" "$PREV_LOG" "unknown")
-    fi
-
-    if [ "$DID_FILL" = "1" ] || [ -f "$PREV_LOG" -a -s "$PREV_LOG" ]; then
-      echo "  状态: ✅ 取证数据存在（${TOOL_COUNT} 次工具调用），可恢复"
-
-      CRASH_LABEL=$(grep "^CRASH:" "$PREV_LOG" 2>/dev/null | tail -1 | grep -oE 'label=[A-Z_]+' | cut -d= -f2)
-      [ -n "$CRASH_LABEL" ] && echo "  CRASH 标记: ${CRASH_LABEL}"
-
-      if [ "$DID_FILL" = "1" ]; then
-        echo "  自动填充: ✅ 已完成"
-      elif [ "$PREV_SEVERITY" != "L3" ]; then
-        echo "  自动填充: 跳过（占位符已变更）"
-      fi
+    if [ "$PREV_SEVERITY" != "L3" ]; then
+      echo "  状态: 诊断完成（${TOOL_COUNT} 次工具调用），数据可恢复"
     else
       if grep -q "（待填充）" "$PREV_SESSION" 2>/dev/null; then
-        echo "  状态: 骨架（仅文件存在，无日志，DB 无记录）"
+        echo "  状态: 骨架（无数据可恢复）"
       else
-        echo "  状态: 已记录（文件存在，内容已填充，但索引缺失）"
+        echo "  状态: 已记录（内容已填充，索引缺失）"
       fi
     fi
   fi
