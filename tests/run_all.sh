@@ -40,10 +40,17 @@ done
 
 echo "════════════════════════════════════"
 if $ALL_PASSED; then
-  echo "  全部通过 ✓"
+  echo "  功能测试: 全部通过 ✓"
 else
-  echo "  存在失败 ✗"
+  echo "  功能测试: 存在失败 ✗"
 fi
 echo "════════════════════════════════════"
+
+# ── 架构审计 (独立, 不影响 exit code) ──
+echo ""
+echo "────────────────────────────────────"
+echo "  架构审计 (audit-plugin.sh)"
+echo "────────────────────────────────────"
+bash "$(dirname "$SCRIPT_DIR")/scripts/audit-plugin.sh" 2>&1 || true
 
 $ALL_PASSED
