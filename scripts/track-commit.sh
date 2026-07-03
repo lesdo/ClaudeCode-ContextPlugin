@@ -3,7 +3,7 @@
 # track-commit.sh — PostToolUse hook
 # 来源: Continuum (marylin/Continuum) → 适配: jq 优先, sed 兜底
 # 触发: matcher "Bash(git commit*)"
-# 写入: ~/.claude/sessions/active-changes.log
+# 写入: 项目/.claude/context/active-changes.log（项目内）
 # 代价: 0 token
 # ============================================================
 set -euo pipefail
@@ -20,8 +20,7 @@ fi
 
 [ -z "$CWD" ] && exit 0
 
-SESSIONS_DIR="$HOME/.claude/sessions"
-LOG="$SESSIONS_DIR/active-changes.log"
+LOG="$CWD/.claude/context/active-changes.log"
 [ -f "$LOG" ] || exit 0
 
 CWD="${CWD//\\//}"

@@ -64,9 +64,9 @@ if git -C "$CWD" rev-parse --git-dir &>/dev/null; then
   LAST_COMMIT="$(git -C "$CWD" log -1 --format='%h %s' 2>/dev/null || true)"
 fi
 
-# Get recently modified files from active-changes.log (if hooks are running)
+# Get recently modified files from active-changes.log (项目内)
 RECENT_FILES=""
-LOG="$HOME/.claude/sessions/active-changes.log"
+LOG="$CWD/.claude/context/active-changes.log"
 if [[ -f "$LOG" ]]; then
   RECENT_FILES="$(grep -E ' (Edit|Write) ' "$LOG" | awk '{print $3}' | sort -u | tail -10 | sed 's/^/- /' || true)"
 fi
@@ -96,8 +96,9 @@ ACTIVITY_FILE="$LIFECYCLE_DIR/activity.md"
 
 # Count files changed this session
 FILE_COUNT=0
-if [[ -f "$LOG" ]]; then
-  FILE_COUNT="$(grep -cE ' (Edit|Write) ' "$LOG" 2>/dev/null)" || FILE_COUNT=0
+CHANGES_LOG="$CWD/.claude/context/active-changes.log"
+if [[ -f "$CHANGES_LOG" ]]; then
+  FILE_COUNT="$(grep -cE ' (Edit|Write) ' "$CHANGES_LOG" 2>/dev/null)" || FILE_COUNT=0
 fi
 
 # Build activity line

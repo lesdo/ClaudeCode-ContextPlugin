@@ -3,7 +3,7 @@
 # track-file-change.sh — PostToolUse hook
 # 来源: Continuum (marylin/Continuum) → 适配: jq 优先, sed 兜底
 # 触发: matcher "Edit|Write"
-# 写入: ~/.claude/sessions/active-changes.log（供 auto-checkpoint 读取）
+# 写入: 项目/.claude/context/active-changes.log（供 auto-checkpoint 读取）
 # 代价: 0 token（command hook, 不消耗 LLM 上下文）
 # ============================================================
 set -euo pipefail
@@ -26,10 +26,10 @@ fi
 
 [ -z "$TOOL_NAME" ] || [ -z "$FILE_PATH" ] || [ -z "$CWD" ] && exit 0
 
-# ── 目录 + 日志路径 ──
-SESSIONS_DIR="$HOME/.claude/sessions"
-LOG="$SESSIONS_DIR/active-changes.log"
-mkdir -p "$SESSIONS_DIR"
+# ── 目录 + 日志路径（项目内，不再散落 ~/.claude/）──
+CONTEXT_DIR="$CWD/.claude/context"
+LOG="$CONTEXT_DIR/active-changes.log"
+mkdir -p "$CONTEXT_DIR"
 
 # ── 路径规范化 ──
 CWD="${CWD//\\//}"
