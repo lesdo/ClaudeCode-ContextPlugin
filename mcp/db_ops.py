@@ -175,6 +175,24 @@ def session_events(project_dir: Optional[str] = None,
         ).fetchall()
         return [dict(r) for r in rows]
 
+def session_events_by_slug(project_dir: Optional[str] = None,
+                           slug: str = "",
+                           limit: int = 200) -> list:
+    """Get all events for a session, looked up by slug."""
+    with get_db(project_dir) as conn:
+        session = conn.execute(
+            "SELECT id FROM sessions WHERE slug=? ORDER BY created_at DESC LIMIT 1",
+            (slug,)
+        ).fetchone()
+        if not session:
+            return []
+        rows = conn.execute(
+            "SELECT timestamp, tool_name, tool_input_summary, file_path FROM events "
+            "WHERE session_id=? ORDER BY id LIMIT ?",
+            (session['id'], limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 # Event operations
 
 def event_log(project_dir: Optional[str] = None,

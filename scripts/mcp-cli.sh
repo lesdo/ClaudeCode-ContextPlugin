@@ -12,20 +12,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MCP_DIR="$(dirname "$SCRIPT_DIR")/mcp"
+SERVER="$MCP_DIR/server.py"
 
-# 参数
 PROJECT_DIR="${1:-$PWD}"
 COMMAND="${2:-}"
-ARGS="${3:-{}}"
+if [ -n "${3:-}" ]; then
+  ARGS="$3"
+else
+  ARGS="{}"
+fi
 
 if [ -z "$COMMAND" ]; then
   echo '{"error":"Usage: mcp-cli.sh <project_dir> <command> [args_json]"}'
   exit 1
 fi
 
-# Windows 路径转换: E:/... → /e/...
-# Python 的 os.path 可以处理 E:/ 格式，但 MSYS2 的 python 可能不行
-PROJECT_DIR_WIN="$(echo "$PROJECT_DIR" | sed 's|^/\([a-zA-Z]\)/|\1:/|')"
-
-# 调用 Python CLI
-exec python3 "$MCP_DIR/server.py" "$PROJECT_DIR" "$COMMAND" "$ARGS"
+# 调用 Python（project_dir 和 args 各自独立传参，避免 shell 展开破坏 JSON）
+exec python3 "$SERVER" "$PROJECT_DIR" "$COMMAND" "$ARGS"

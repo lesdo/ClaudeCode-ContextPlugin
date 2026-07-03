@@ -321,3 +321,133 @@ crash_auto_fill() {
   rm -f "$auto_tmp"
   echo "$tool_count $severity $did_fill"
 }
+
+# ── 崩溃自动填充 (DB 优先): 从 SQLite 读取事件 → 注入骨架会话 ──
+# Phase B 迁移: 主路径走 SQLite，失败时回退到 .log 解析
+# 用法: crash_auto_fill_db <session_slug> <session_md> <project_dir> <context>
+# 输出: TOOL_COUNT SEVERITY DID_FILL（与 crash_auto_fill 相同格式）
+crash_auto_fill_db() {
+  local slug="$1"
+  local session_md="$2"
+  local project_dir="$3"
+  local context="${4:-skeleton}"
+
+  local tool_count=0 severity="L2" did_fill=0
+  local mcp_cli events_json auto_tmp
+
+  mcp_cli="${CLAUDE_PLUGIN_ROOT:-$(dirname "$(dirname "${BASH_SOURCE[0]}")")}/scripts/mcp-cli.sh"
+
+  if [ ! -x "$mcp_cli" ] 2>/dev/null; then
+    echo "0 L3 0"
+    return 0
+  fi
+
+  # 从 SQLite 获取事件
+  events_json=$(bash "$mcp_cli" "$project_dir" session_events_by_slug \
+    "{\"slug\":\"$slug\",\"limit\":200}" 2>/dev/null || echo "[]")
+
+  # 检查是否有数据
+  if [ "$events_json" = "[]" ] || [ -z "$events_json" ]; then
+    echo "0 L3 0"
+    return 0
+  fi
+
+  # 用 python3 一次性解析: 计数 + 格式化工具行
+  local parsed
+  parsed=$(echo "$events_json" | python3 -c "
+import sys, json
+events = json.load(sys.stdin)
+count = len(events)
+lines = []
+for e in events:
+    ts = e.get('timestamp', '??:??:??')
+    tool = e.get('tool_name', '?')
+    summary = e.get('tool_input_summary', '-') or '-'
+    lines.append(f'- {ts} {tool} {summary[:80]}')
+print(f'{count}')
+print('\n'.join(lines))
+" 2>/dev/null)
+
+  if [ -z "$parsed" ]; then
+    echo "0 L3 0"
+    return 0
+  fi
+
+  tool_count=$(echo "$parsed" | head -1)
+  tool_lines=$(echo "$parsed" | tail -n +2)
+
+  # 严重度判定（DB 路径的 CRASH 标记从 .log 补充读取）
+  local session_log="${session_md%.md}.log"
+  local crash_line=""
+  if [ -f "$session_log" ]; then
+    crash_line=$(grep "^CRASH:" "$session_log" 2>/dev/null | tail -1)
+  fi
+
+  if [ "$context" = "skeleton" ]; then
+    if [ -n "$crash_line" ]; then
+      if [ "$tool_count" -lt 5 ] 2>/dev/null; then
+        severity="L1"
+      else
+        severity="L2"
+      fi
+    elif [ "$tool_count" -gt 0 ] 2>/dev/null; then
+      severity="L2"
+    else
+      severity="L3"
+    fi
+  else
+    severity="L2"
+  fi
+
+  # 无数据 → L3
+  if [ "$tool_count" -eq 0 ] 2>/dev/null; then
+    echo "0 L3 0"
+    return 0
+  fi
+
+  # ── 构建自动填充内容 ──
+  auto_tmp=$(mktemp)
+  {
+    if [ -n "$crash_line" ]; then
+      local crash_exit_code crash_label crash_time
+      crash_exit_code=$(echo "$crash_line" | grep -oE "exit_code=[0-9]+" | cut -d= -f2)
+      crash_label=$(echo "$crash_line" | grep -oE "label=[A-Z_]+" | cut -d= -f2)
+      crash_time=$(echo "$crash_line" | sed -n 's/.*time=\([^ ]*\).*/\1/p')
+      echo "- **结束时间**: ${crash_time:-未知}"
+      echo "- **退出码**: ${crash_exit_code:-?} (${crash_label:-?})"
+      echo "- **严重度**: ${severity}"
+      if [ "$context" = "unknown" ]; then
+        echo "- **状态**: ⚠ crash auto-fill (SQLite, 索引缺失)"
+      else
+        echo "- **状态**: ⚠ 崩溃退出 — 以下信息由 crash auto-fill (SQLite) 自动填充"
+      fi
+    else
+      echo "- **结束时间**: （未知）"
+      echo "- **退出码**: （未知）"
+      echo "- **严重度**: ${severity}"
+      echo "- **状态**: ⚠ 未正常退出 — 以下信息由 crash auto-fill (SQLite) 自动填充"
+    fi
+    echo ""
+    echo "### 工具调用记录（来自 SQLite events）"
+    echo ""
+    echo "共 ${tool_count} 次："
+    echo ""
+    echo "$tool_lines"
+    echo ""
+    echo "### 文件变更"
+    echo ""
+    echo "（异常退出，未追踪）"
+  } > "$auto_tmp"
+
+  # ── sed 注入 ──
+  if grep -q "（会话结束后自动填充）" "$session_md" 2>/dev/null; then
+    sed -i "/（会话结束后自动填充）/{
+      r $auto_tmp
+      d
+    }" "$session_md"
+    did_fill=1
+  fi
+
+  rm -f "$auto_tmp"
+  echo "$tool_count $severity $did_fill"
+}

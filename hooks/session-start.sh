@@ -270,12 +270,18 @@ else
     echo "⚠ 上次会话未记录上下文！"
     echo "  文件: $PREV_NAME（仅骨架）"
 
+    PREV_SLUG="${PREV_DATE}_${PREV_TIME}"
     PREV_LOG="${PREV_SESSION%.md}.log"
-    read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill "$PREV_SESSION" "$PREV_LOG" "skeleton")
+
+    # Phase B: DB 优先，.log 兜底
+    read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill_db "$PREV_SLUG" "$PREV_SESSION" "$PROJECT_DIR" "skeleton")
+    if [ "$PREV_SEVERITY" = "L3" ] && [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
+      read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill "$PREV_SESSION" "$PREV_LOG" "skeleton")
+    fi
 
     if [ "$PREV_SEVERITY" = "L3" ]; then
       if [ ! -f "$PREV_LOG" ] || [ ! -s "$PREV_LOG" ]; then
-        echo "  状态: 骨架（无取证日志文件）"
+        echo "  状态: 骨架（无取证日志文件，DB 无记录）"
       else
         echo "  状态: 骨架（无取证数据可填充）"
       fi
@@ -298,10 +304,17 @@ else
     echo "上次会话: $PREV_NAME（索引无记录，从文件系统检测...）"
     echo ""
 
+    PREV_SLUG="${PREV_DATE}_${PREV_TIME}"
     PREV_LOG="${PREV_SESSION%.md}.log"
-    if [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
+
+    # Phase B: DB 优先，.log 兜底
+    read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill_db "$PREV_SLUG" "$PREV_SESSION" "$PROJECT_DIR" "unknown")
+    if [ "$DID_FILL" = "0" ] && [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
       read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill "$PREV_SESSION" "$PREV_LOG" "unknown")
-      echo "  状态: ✅ 取证日志存在（${TOOL_COUNT} 次工具调用），可恢复"
+    fi
+
+    if [ "$DID_FILL" = "1" ] || [ -f "$PREV_LOG" -a -s "$PREV_LOG" ]; then
+      echo "  状态: ✅ 取证数据存在（${TOOL_COUNT} 次工具调用），可恢复"
 
       CRASH_LABEL=$(grep "^CRASH:" "$PREV_LOG" 2>/dev/null | tail -1 | grep -oE 'label=[A-Z_]+' | cut -d= -f2)
       [ -n "$CRASH_LABEL" ] && echo "  CRASH 标记: ${CRASH_LABEL}"
@@ -313,7 +326,7 @@ else
       fi
     else
       if grep -q "（待填充）" "$PREV_SESSION" 2>/dev/null; then
-        echo "  状态: 骨架（仅文件存在，无日志，无工具调用）"
+        echo "  状态: 骨架（仅文件存在，无日志，DB 无记录）"
       else
         echo "  状态: 已记录（文件存在，内容已填充，但索引缺失）"
       fi

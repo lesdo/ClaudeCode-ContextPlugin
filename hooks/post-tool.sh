@@ -24,30 +24,38 @@ done
 [ -z "$SUMMARY" ] && SUMMARY="-"
 
 # ============================================================
-# Phase 1: 取证日志（原 auto-log.sh）— 全部工具调用
+# Phase 1: 事件记录 — SQLite 优先，.log 兜底 (Phase B 迁移)
 # ============================================================
-SESSIONS_DIR="$PROJECT_DIR/.claude/context/sessions"
-if [ -d "$SESSIONS_DIR" ]; then
-  POINTER="$SESSIONS_DIR/.current-session"
-  if [ -f "$POINTER" ]; then
-    SESSION_LOG=$(sed 's/\.md$/.log/' "$POINTER")
-  else
-    SESSION_MD=$(ls -1t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | head -1)
-    if [ -n "$SESSION_MD" ]; then
-      SESSION_LOG="${SESSION_MD%.md}.log"
-    fi
-  fi
-  if [ -n "${SESSION_LOG:-}" ]; then
-    TS=$(date +%H:%M:%S)
-    echo "- $TS $TOOL_NAME $SUMMARY" >> "$SESSION_LOG"
+MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
+EVENT_LOGGED=0
+
+# 主路径: SQLite event_log
+if [ -x "$MCP_CLI" ] 2>/dev/null; then
+  if bash "$MCP_CLI" "$PROJECT_DIR" event_log \
+    "{\"tool_name\":\"$TOOL_NAME\",\"tool_input_summary\":\"$SUMMARY\",\"file_path\":\"${FILE_PATH:-}\"}" \
+    2>/dev/null; then
+    EVENT_LOGGED=1
   fi
 fi
 
-# Phase 1b: SQLite 事件双写（Phase B — 并行写入）
-if [ -x "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh" ] 2>/dev/null; then
-  bash "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh" "$PROJECT_DIR" event_log \
-    "{\"tool_name\":\"$TOOL_NAME\",\"tool_input_summary\":\"$SUMMARY\",\"file_path\":\"${FILE_PATH:-}\"}" \
-    2>/dev/null || true
+# 兜底路径: .log 文件追加（SQLite 不可用时）
+if [ "$EVENT_LOGGED" -eq 0 ]; then
+  SESSIONS_DIR="$PROJECT_DIR/.claude/context/sessions"
+  if [ -d "$SESSIONS_DIR" ]; then
+    POINTER="$SESSIONS_DIR/.current-session"
+    if [ -f "$POINTER" ]; then
+      SESSION_LOG=$(sed 's/\.md$/.log/' "$POINTER")
+    else
+      SESSION_MD=$(ls -1t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | head -1)
+      if [ -n "$SESSION_MD" ]; then
+        SESSION_LOG="${SESSION_MD%.md}.log"
+      fi
+    fi
+    if [ -n "${SESSION_LOG:-}" ]; then
+      TS=$(date +%H:%M:%S)
+      echo "- $TS $TOOL_NAME $SUMMARY" >> "$SESSION_LOG"
+    fi
+  fi
 fi
 
 # ============================================================

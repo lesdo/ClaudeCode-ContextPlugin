@@ -15,6 +15,7 @@ from db_core import ensure_schema, get_db_path
 from db_ops import (
     session_create, session_finalize, session_get, session_list,
     session_check_active, session_mark_abandoned, session_events,
+    session_events_by_slug,
     event_log,
     memory_search, memory_store, memory_get, memory_update, memory_delete, memory_list,
     memory_hybrid_search, memory_reindex_vectors,
@@ -318,6 +319,7 @@ def cli_main():
         "session_check_active": session_check_active,
         "session_mark_abandoned": session_mark_abandoned,
         "session_events": session_events,
+        "session_events_by_slug": session_events_by_slug,
         "event_log": event_log,
         "memory_search": memory_search,
         "memory_store": memory_store,
