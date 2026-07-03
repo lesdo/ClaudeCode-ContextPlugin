@@ -262,82 +262,19 @@ else
     echo "⚠ 上次会话未记录上下文！"
     echo "  文件: $PREV_NAME（仅骨架）"
 
-    # ── P0: crash auto-fill + P2: 严重度分级 ──
     PREV_LOG="${PREV_SESSION%.md}.log"
-    if [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
-      # 提取 CRASH 标记行（P1 格式含 label=）
-      CRASH_LINE=$(grep "^CRASH:" "$PREV_LOG" 2>/dev/null | tail -1)
-      # 提取全部工具调用行
-      TOOL_LINES=$(grep -E "^- [0-9]{2}:[0-9]{2}:[0-9]{2} " "$PREV_LOG" 2>/dev/null)
-      if [ -n "$TOOL_LINES" ]; then
-        TOOL_COUNT=$(echo "$TOOL_LINES" | wc -l)
-      else
-        TOOL_COUNT=0
-      fi
+    read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill "$PREV_SESSION" "$PREV_LOG" "skeleton")
 
-      # 确定严重度
-      if [ -n "$CRASH_LINE" ]; then
-        if [ "$TOOL_COUNT" -lt 5 ] 2>/dev/null; then
-          PREV_SEVERITY="L1"
-        else
-          PREV_SEVERITY="L2"
-        fi
-      else
-        PREV_SEVERITY="L2"  # 骨架但无 CRASH 行 = 未正常退出但可能有数据
-      fi
-
-      if [ -n "$CRASH_LINE" ] || [ "$TOOL_COUNT" -gt 0 ] 2>/dev/null; then
-        # 构建自动填充内容
-        AUTO_TMP=$(mktemp)
-        {
-          if [ -n "$CRASH_LINE" ]; then
-            CRASH_EXIT_CODE=$(echo "$CRASH_LINE" | grep -oE "exit_code=[0-9]+" | cut -d= -f2)
-            CRASH_LABEL=$(echo "$CRASH_LINE" | grep -oE "label=[A-Z_]+" | cut -d= -f2)
-            CRASH_TIME=$(echo "$CRASH_LINE" | sed -n 's/.*time=\([^ ]*\).*/\1/p')
-            echo "- **结束时间**: ${CRASH_TIME:-未知}"
-            echo "- **退出码**: ${CRASH_EXIT_CODE:-?} (${CRASH_LABEL:-?})"
-            echo "- **严重度**: ${PREV_SEVERITY}"
-            echo "- **状态**: ⚠ 崩溃退出 — 以下信息由 crash auto-fill 自动填充"
-          else
-            echo "- **结束时间**: （未知）"
-            echo "- **退出码**: （未知）"
-            echo "- **严重度**: ${PREV_SEVERITY}"
-            echo "- **状态**: ⚠ 未正常退出 — 以下信息由 crash auto-fill 自动填充"
-          fi
-          echo ""
-          echo "### 工具调用记录（来自取证日志）"
-          echo ""
-          if [ "$TOOL_COUNT" -gt 0 ] 2>/dev/null; then
-            echo "共 ${TOOL_COUNT} 次："
-            echo ""
-            echo "$TOOL_LINES"
-          else
-            echo "（无工具调用记录）"
-          fi
-          echo ""
-          echo "### 文件变更"
-          echo ""
-          echo "（异常退出，未追踪）"
-        } > "$AUTO_TMP"
-
-        # sed 插入：替换占位符
-        if grep -q "（会话结束后自动填充）" "$PREV_SESSION" 2>/dev/null; then
-          sed -i "/（会话结束后自动填充）/{
-            r $AUTO_TMP
-            d
-          }" "$PREV_SESSION"
-          echo "  状态: ✅ 已自动填充 (${TOOL_COUNT} 次工具调用, 严重度 ${PREV_SEVERITY})"
-        else
-          echo "  状态: 骨架（占位符已变更，跳过自动填充）"
-        fi
-        rm -f "$AUTO_TMP"
+    if [ "$PREV_SEVERITY" = "L3" ]; then
+      if [ ! -f "$PREV_LOG" ] || [ ! -s "$PREV_LOG" ]; then
+        echo "  状态: 骨架（无取证日志文件）"
       else
         echo "  状态: 骨架（无取证数据可填充）"
-        PREV_SEVERITY="L3"
       fi
+    elif [ "$DID_FILL" = "1" ]; then
+      echo "  状态: ✅ 已自动填充 (${TOOL_COUNT} 次工具调用, 严重度 ${PREV_SEVERITY})"
     else
-      echo "  状态: 骨架（无取证日志文件）"
-      PREV_SEVERITY="L3"
+      echo "  状态: 骨架（占位符已变更，跳过自动填充）"
     fi
 
     # 输出严重度分级（供 AI 启动报告使用）
@@ -355,60 +292,17 @@ else
 
     PREV_LOG="${PREV_SESSION%.md}.log"
     if [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
-      TOOL_LINES=$(grep -E "^- [0-9]{2}:[0-9]{2}:[0-9]{2} " "$PREV_LOG" 2>/dev/null)
-      TOOL_COUNT=0
-      [ -n "$TOOL_LINES" ] && TOOL_COUNT=$(echo "$TOOL_LINES" | wc -l)
-
+      read TOOL_COUNT PREV_SEVERITY DID_FILL <<< $(crash_auto_fill "$PREV_SESSION" "$PREV_LOG" "unknown")
       echo "  状态: ✅ 取证日志存在（${TOOL_COUNT} 次工具调用），可恢复"
-      PREV_SEVERITY="L2"
 
-      CRASH_LINE=$(grep "^CRASH:" "$PREV_LOG" 2>/dev/null | tail -1)
-      if [ -n "$CRASH_LINE" ]; then
-        echo "  CRASH 标记: $(echo "$CRASH_LINE" | grep -oE 'label=[A-Z_]+' | cut -d= -f2)"
-      fi
+      CRASH_LABEL=$(grep "^CRASH:" "$PREV_LOG" 2>/dev/null | tail -1 | grep -oE 'label=[A-Z_]+' | cut -d= -f2)
+      [ -n "$CRASH_LABEL" ] && echo "  CRASH 标记: ${CRASH_LABEL}"
 
-      AUTO_TMP=$(mktemp)
-      {
-        if [ -n "$CRASH_LINE" ]; then
-          CRASH_EXIT_CODE=$(echo "$CRASH_LINE" | grep -oE "exit_code=[0-9]+" | cut -d= -f2)
-          CRASH_LABEL=$(echo "$CRASH_LINE" | grep -oE "label=[A-Z_]+" | cut -d= -f2)
-          CRASH_TIME=$(echo "$CRASH_LINE" | sed -n 's/.*time=\([^ ]*\).*/\1/p')
-          echo "- **结束时间**: ${CRASH_TIME:-未知}"
-          echo "- **退出码**: ${CRASH_EXIT_CODE:-?} (${CRASH_LABEL:-?})"
-          echo "- **严重度**: ${PREV_SEVERITY}"
-          echo "- **状态**: ⚠ crash auto-fill（索引缺失，从取证日志恢复）"
-        else
-          echo "- **结束时间**: （未知）"
-          echo "- **退出码**: （未知）"
-          echo "- **严重度**: ${PREV_SEVERITY}"
-          echo "- **状态**: ⚠ auto-fill（索引缺失，从取证日志恢复）"
-        fi
-        echo ""
-        echo "### 工具调用记录（来自取证日志）"
-        echo ""
-        if [ "$TOOL_COUNT" -gt 0 ] 2>/dev/null; then
-          echo "共 ${TOOL_COUNT} 次："
-          echo ""
-          echo "$TOOL_LINES"
-        else
-          echo "（无工具调用记录）"
-        fi
-        echo ""
-        echo "### 文件变更"
-        echo ""
-        echo "（索引缺失，文件变更未追踪）"
-      } > "$AUTO_TMP"
-
-      if grep -q "（会话结束后自动填充）" "$PREV_SESSION" 2>/dev/null; then
-        sed -i "/（会话结束后自动填充）/{
-          r $AUTO_TMP
-          d
-        }" "$PREV_SESSION"
+      if [ "$DID_FILL" = "1" ]; then
         echo "  自动填充: ✅ 已完成"
-      else
+      elif [ "$PREV_SEVERITY" != "L3" ]; then
         echo "  自动填充: 跳过（占位符已变更）"
       fi
-      rm -f "$AUTO_TMP"
     else
       if grep -q "（待填充）" "$PREV_SESSION" 2>/dev/null; then
         echo "  状态: 骨架（仅文件存在，无日志，无工具调用）"

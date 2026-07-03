@@ -218,3 +218,106 @@ session_find_file() {
   [ -f "$archive" ] && { echo "$archive"; return 0; }
   return 1
 }
+
+# ── 崩溃自动填充: 从 .log 取证日志提取工具调用记录注入骨架会话 ──
+# 用法: crash_auto_fill <session_md> <session_log> <context>
+#   context: "skeleton" (索引标记骨架) | "unknown" (索引无记录)
+# 输出: TOOL_COUNT SEVERITY DID_FILL
+#   严重度: L1=少量操作无损失, L2=有取证可恢复, L3=数据缺失
+#   DID_FILL: 1=已注入, 0=未注入(无数据/占位符不存在)
+crash_auto_fill() {
+  local session_md="$1"
+  local session_log="$2"
+  local context="${3:-skeleton}"
+
+  local tool_count=0 severity="L2" did_fill=0
+  local crash_line tool_lines auto_tmp
+  local crash_exit_code crash_label crash_time
+
+  # ── 无日志 → L3 ──
+  if [ ! -f "$session_log" ] || [ ! -s "$session_log" ]; then
+    echo "0 L3 0"
+    return 0
+  fi
+
+  # ── 提取取证数据 ──
+  crash_line=$(grep "^CRASH:" "$session_log" 2>/dev/null | tail -1)
+  tool_lines=$(grep -E "^- [0-9]{2}:[0-9]{2}:[0-9]{2} " "$session_log" 2>/dev/null)
+  if [ -n "$tool_lines" ]; then
+    tool_count=$(echo "$tool_lines" | wc -l)
+  fi
+
+  # ── 严重度判定 ──
+  if [ "$context" = "skeleton" ]; then
+    if [ -n "$crash_line" ]; then
+      if [ "$tool_count" -lt 5 ] 2>/dev/null; then
+        severity="L1"
+      else
+        severity="L2"
+      fi
+    elif [ "$tool_count" -gt 0 ] 2>/dev/null; then
+      severity="L2"
+    else
+      severity="L3"  # skeleton: .log 存在但无 crash 标记且无工具调用
+    fi
+  else
+    severity="L2"  # unknown 模式：有 .log 就是 L2
+  fi
+
+  # ── 构建自动填充内容 ──
+  auto_tmp=$(mktemp)
+  {
+    if [ -n "$crash_line" ]; then
+      crash_exit_code=$(echo "$crash_line" | grep -oE "exit_code=[0-9]+" | cut -d= -f2)
+      crash_label=$(echo "$crash_line" | grep -oE "label=[A-Z_]+" | cut -d= -f2)
+      crash_time=$(echo "$crash_line" | sed -n 's/.*time=\([^ ]*\).*/\1/p')
+      echo "- **结束时间**: ${crash_time:-未知}"
+      echo "- **退出码**: ${crash_exit_code:-?} (${crash_label:-?})"
+      echo "- **严重度**: ${severity}"
+      if [ "$context" = "unknown" ]; then
+        echo "- **状态**: ⚠ crash auto-fill（索引缺失，从取证日志恢复）"
+      else
+        echo "- **状态**: ⚠ 崩溃退出 — 以下信息由 crash auto-fill 自动填充"
+      fi
+    else
+      echo "- **结束时间**: （未知）"
+      echo "- **退出码**: （未知）"
+      echo "- **严重度**: ${severity}"
+      if [ "$context" = "unknown" ]; then
+        echo "- **状态**: ⚠ auto-fill（索引缺失，从取证日志恢复）"
+      else
+        echo "- **状态**: ⚠ 未正常退出 — 以下信息由 crash auto-fill 自动填充"
+      fi
+    fi
+    echo ""
+    echo "### 工具调用记录（来自取证日志）"
+    echo ""
+    if [ "$tool_count" -gt 0 ] 2>/dev/null; then
+      echo "共 ${tool_count} 次："
+      echo ""
+      echo "$tool_lines"
+    else
+      echo "（无工具调用记录）"
+    fi
+    echo ""
+    echo "### 文件变更"
+    echo ""
+    if [ "$context" = "unknown" ]; then
+      echo "（索引缺失，文件变更未追踪）"
+    else
+      echo "（异常退出，未追踪）"
+    fi
+  } > "$auto_tmp"
+
+  # ── sed 注入 ──
+  if grep -q "（会话结束后自动填充）" "$session_md" 2>/dev/null; then
+    sed -i "/（会话结束后自动填充）/{
+      r $auto_tmp
+      d
+    }" "$session_md"
+    did_fill=1
+  fi
+
+  rm -f "$auto_tmp"
+  echo "$tool_count $severity $did_fill"
+}
