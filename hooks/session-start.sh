@@ -177,8 +177,8 @@ if [ ! -d "$SESSIONS_DIR" ]; then
   exit 0
 fi
 
-# 仅匹配会话文件格式 YYYY-MM-DD_HHMM.md
-SESSION_FILES=$(ls -1 "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}\.md$' | sort -r)
+# 匹配会话文件格式 YYYY-MM-DD_HHMM.md 或 YYYY-MM-DD_HHMMSS.md
+SESSION_FILES=$(ls -1 "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | sort -r)
 
 if [ -z "$SESSION_FILES" ]; then
   echo "状态: 无历史会话记录"
@@ -208,52 +208,247 @@ fi
 # 写入会话指针（供 PostToolUse hook 快速定位）
 echo "$CURRENT_SESSION" > "$SESSIONS_DIR/.current-session"
 
-# 崩溃残留检测
+# ── P2: 崩溃残留检测 + 严重度分级（L1/L2/L3）──
 CRASH_FILE="$CONTEXT_DIR/.crash"
+CRASH_SEVERITY=""
 if [ -f "$CRASH_FILE" ]; then
   echo ""
   echo "WARN_CRASH: $(cat "$CRASH_FILE")"
   echo "CRASH_LOG: $CURRENT_LOG"
+  CRASH_SEVERITY="L3"
+  echo "CRASH_SEVERITY: L3 — 会话文件缺失，需人工排查"
 fi
 
 # 历史会话（排除当前）
 HISTORICAL=$(echo "$SESSION_FILES" | sed -n '2,$p')
 
+# ── 索引初始化（不依赖是否有历史会话）──
+SESSION_INDEX="$SESSIONS_DIR/.session-index"
+
+# 当前会话基础名（不含 .md 后缀，供 migrate/reconcile 跳过用）
+CURRENT_BASE="${CURRENT_NAME%.md}"
+
+if [ ! -f "$SESSION_INDEX" ]; then
+  # 首次运行：从现有会话文件一次性迁移构建索引（跳过当前会话）
+  MIGRATED=$(session_index_migrate "$SESSIONS_DIR" "$CURRENT_BASE")
+  if [ "$MIGRATED" -gt 0 ] 2>/dev/null; then
+    echo "  （会话索引已构建: ${MIGRATED} 条记录）"
+  fi
+fi
+
+# ── 文件系统→索引修复（处理 wrapper 被中断导致的孤儿会话）
+RECONCILED=$(session_index_reconcile "$SESSIONS_DIR" "$CURRENT_BASE")
+read REC_ADDED REC_COMPLETE REC_SKELETON <<< "$RECONCILED"
+if [ "$REC_ADDED" -gt 0 ] 2>/dev/null; then
+  echo "  （孤儿会话已修复: ${REC_ADDED} 条缺失索引已补录）"
+fi
+
+# 从索引读取统计
+read HIST_TOTAL HIST_COMPLETE HIST_SKELETON <<< $(session_index_read "$SESSIONS_DIR")
+
 if [ -z "$HISTORICAL" ]; then
   echo "历史会话: 无"
 else
-  HIST_TOTAL=$(echo "$HISTORICAL" | wc -l)
-
-  # 索引驱动统计（替代 xargs grep 全量扫描 + .session-stats 缓存）
-  SESSION_INDEX="$SESSIONS_DIR/.session-index"
-
-  if [ ! -f "$SESSION_INDEX" ]; then
-    # 首次运行：从现有会话文件一次性迁移构建索引
-    MIGRATED=$(session_index_migrate "$SESSIONS_DIR")
-    echo "  （会话索引已构建: ${MIGRATED} 条记录）"
-  fi
-
-  # 从索引读取统计（O(1) grep 替代 O(n) xargs grep 扫描文件内容）
-  read HIST_TOTAL HIST_COMPLETE HIST_SKELETON <<< $(session_index_read "$SESSIONS_DIR")
-
   echo "历史会话: 共 $HIST_TOTAL，已记录 $HIST_COMPLETE，仅骨架 $HIST_SKELETON"
 
   # 上次会话（ID 精确查询索引，禁止 tail -1 位置推断 — meta.redline 7a）
   PREV_SESSION=$(echo "$HISTORICAL" | head -1)
   PREV_NAME=$(basename "$PREV_SESSION")
   PREV_DATE="${PREV_NAME:0:10}"
-  PREV_TIME="${PREV_NAME:11:4}"
+  PREV_TIME="${PREV_NAME:11:6}"
   PREV_STATUS=$(session_index_find "$SESSIONS_DIR" "$PREV_DATE" "$PREV_TIME")
   if [ "$PREV_STATUS" = "skeleton" ]; then
     echo ""
     echo "⚠ 上次会话未记录上下文！"
     echo "  文件: $PREV_NAME（仅骨架）"
-    echo "  状态: 上次会话未完整记录"
+
+    # ── P0: crash auto-fill + P2: 严重度分级 ──
+    PREV_LOG="${PREV_SESSION%.md}.log"
+    if [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
+      # 提取 CRASH 标记行（P1 格式含 label=）
+      CRASH_LINE=$(grep "^CRASH:" "$PREV_LOG" 2>/dev/null | tail -1)
+      # 提取全部工具调用行
+      TOOL_LINES=$(grep -E "^- [0-9]{2}:[0-9]{2}:[0-9]{2} " "$PREV_LOG" 2>/dev/null)
+      if [ -n "$TOOL_LINES" ]; then
+        TOOL_COUNT=$(echo "$TOOL_LINES" | wc -l)
+      else
+        TOOL_COUNT=0
+      fi
+
+      # 确定严重度
+      if [ -n "$CRASH_LINE" ]; then
+        if [ "$TOOL_COUNT" -lt 5 ] 2>/dev/null; then
+          PREV_SEVERITY="L1"
+        else
+          PREV_SEVERITY="L2"
+        fi
+      else
+        PREV_SEVERITY="L2"  # 骨架但无 CRASH 行 = 未正常退出但可能有数据
+      fi
+
+      if [ -n "$CRASH_LINE" ] || [ "$TOOL_COUNT" -gt 0 ] 2>/dev/null; then
+        # 构建自动填充内容
+        AUTO_TMP=$(mktemp)
+        {
+          if [ -n "$CRASH_LINE" ]; then
+            CRASH_EXIT_CODE=$(echo "$CRASH_LINE" | grep -oE "exit_code=[0-9]+" | cut -d= -f2)
+            CRASH_LABEL=$(echo "$CRASH_LINE" | grep -oE "label=[A-Z_]+" | cut -d= -f2)
+            CRASH_TIME=$(echo "$CRASH_LINE" | sed -n 's/.*time=\([^ ]*\).*/\1/p')
+            echo "- **结束时间**: ${CRASH_TIME:-未知}"
+            echo "- **退出码**: ${CRASH_EXIT_CODE:-?} (${CRASH_LABEL:-?})"
+            echo "- **严重度**: ${PREV_SEVERITY}"
+            echo "- **状态**: ⚠ 崩溃退出 — 以下信息由 crash auto-fill 自动填充"
+          else
+            echo "- **结束时间**: （未知）"
+            echo "- **退出码**: （未知）"
+            echo "- **严重度**: ${PREV_SEVERITY}"
+            echo "- **状态**: ⚠ 未正常退出 — 以下信息由 crash auto-fill 自动填充"
+          fi
+          echo ""
+          echo "### 工具调用记录（来自取证日志）"
+          echo ""
+          if [ "$TOOL_COUNT" -gt 0 ] 2>/dev/null; then
+            echo "共 ${TOOL_COUNT} 次："
+            echo ""
+            echo "$TOOL_LINES"
+          else
+            echo "（无工具调用记录）"
+          fi
+          echo ""
+          echo "### 文件变更"
+          echo ""
+          echo "（异常退出，未追踪）"
+        } > "$AUTO_TMP"
+
+        # sed 插入：替换占位符
+        if grep -q "（会话结束后自动填充）" "$PREV_SESSION" 2>/dev/null; then
+          sed -i "/（会话结束后自动填充）/{
+            r $AUTO_TMP
+            d
+          }" "$PREV_SESSION"
+          echo "  状态: ✅ 已自动填充 (${TOOL_COUNT} 次工具调用, 严重度 ${PREV_SEVERITY})"
+        else
+          echo "  状态: 骨架（占位符已变更，跳过自动填充）"
+        fi
+        rm -f "$AUTO_TMP"
+      else
+        echo "  状态: 骨架（无取证数据可填充）"
+        PREV_SEVERITY="L3"
+      fi
+    else
+      echo "  状态: 骨架（无取证日志文件）"
+      PREV_SEVERITY="L3"
+    fi
+
+    # 输出严重度分级（供 AI 启动报告使用）
+    case "${PREV_SEVERITY:-L3}" in
+      L1) echo "  CRASH_SEVERITY: L1 — 短会话/少量操作，无实质损失" ;;
+      L2) echo "  CRASH_SEVERITY: L2 — 有取证数据，已自动填充，可恢复上下文" ;;
+      L3) echo "  CRASH_SEVERITY: L3 — 数据缺失，需人工排查" ;;
+    esac
   elif [ "$PREV_STATUS" = "complete" ]; then
     echo "上次会话: $PREV_NAME（已完整记录）"
   else
-    echo "上次会话: $PREV_NAME（状态未知，索引无记录）"
+    # FP3: "unknown" → 文件系统直接恢复（索引可能因 wrapper 中断缺失）
+    echo "上次会话: $PREV_NAME（索引无记录，从文件系统检测...）"
+    echo ""
+
+    PREV_LOG="${PREV_SESSION%.md}.log"
+    if [ -f "$PREV_LOG" ] && [ -s "$PREV_LOG" ]; then
+      TOOL_LINES=$(grep -E "^- [0-9]{2}:[0-9]{2}:[0-9]{2} " "$PREV_LOG" 2>/dev/null)
+      TOOL_COUNT=0
+      [ -n "$TOOL_LINES" ] && TOOL_COUNT=$(echo "$TOOL_LINES" | wc -l)
+
+      echo "  状态: ✅ 取证日志存在（${TOOL_COUNT} 次工具调用），可恢复"
+      PREV_SEVERITY="L2"
+
+      CRASH_LINE=$(grep "^CRASH:" "$PREV_LOG" 2>/dev/null | tail -1)
+      if [ -n "$CRASH_LINE" ]; then
+        echo "  CRASH 标记: $(echo "$CRASH_LINE" | grep -oE 'label=[A-Z_]+' | cut -d= -f2)"
+      fi
+
+      AUTO_TMP=$(mktemp)
+      {
+        if [ -n "$CRASH_LINE" ]; then
+          CRASH_EXIT_CODE=$(echo "$CRASH_LINE" | grep -oE "exit_code=[0-9]+" | cut -d= -f2)
+          CRASH_LABEL=$(echo "$CRASH_LINE" | grep -oE "label=[A-Z_]+" | cut -d= -f2)
+          CRASH_TIME=$(echo "$CRASH_LINE" | sed -n 's/.*time=\([^ ]*\).*/\1/p')
+          echo "- **结束时间**: ${CRASH_TIME:-未知}"
+          echo "- **退出码**: ${CRASH_EXIT_CODE:-?} (${CRASH_LABEL:-?})"
+          echo "- **严重度**: ${PREV_SEVERITY}"
+          echo "- **状态**: ⚠ crash auto-fill（索引缺失，从取证日志恢复）"
+        else
+          echo "- **结束时间**: （未知）"
+          echo "- **退出码**: （未知）"
+          echo "- **严重度**: ${PREV_SEVERITY}"
+          echo "- **状态**: ⚠ auto-fill（索引缺失，从取证日志恢复）"
+        fi
+        echo ""
+        echo "### 工具调用记录（来自取证日志）"
+        echo ""
+        if [ "$TOOL_COUNT" -gt 0 ] 2>/dev/null; then
+          echo "共 ${TOOL_COUNT} 次："
+          echo ""
+          echo "$TOOL_LINES"
+        else
+          echo "（无工具调用记录）"
+        fi
+        echo ""
+        echo "### 文件变更"
+        echo ""
+        echo "（索引缺失，文件变更未追踪）"
+      } > "$AUTO_TMP"
+
+      if grep -q "（会话结束后自动填充）" "$PREV_SESSION" 2>/dev/null; then
+        sed -i "/（会话结束后自动填充）/{
+          r $AUTO_TMP
+          d
+        }" "$PREV_SESSION"
+        echo "  自动填充: ✅ 已完成"
+      else
+        echo "  自动填充: 跳过（占位符已变更）"
+      fi
+      rm -f "$AUTO_TMP"
+    else
+      if grep -q "（待填充）" "$PREV_SESSION" 2>/dev/null; then
+        echo "  状态: 骨架（仅文件存在，无日志，无工具调用）"
+      else
+        echo "  状态: 已记录（文件存在，内容已填充，但索引缺失）"
+      fi
+    fi
   fi
+fi
+
+# ============================================================
+# Phase B: SQLite 集成 — 会话状态 + 简报注入
+# ============================================================
+MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
+if [ -x "$MCP_CLI" ] 2>/dev/null; then
+  # 确保 DB schema
+  bash "$MCP_CLI" "$PROJECT_DIR" ensure_schema 2>/dev/null || true
+
+  # bug#2: mark crash residues as abandoned (auto-skips when only 1 active)
+  RESULT=$(bash "$MCP_CLI" "$PROJECT_DIR" session_mark_abandoned 2>/dev/null || echo "{}")
+  ABANDONED_COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rowcount',0))" 2>/dev/null || echo "0")
+  if [ "$ABANDONED_COUNT" -gt 0 ] 2>/dev/null; then
+    echo ""
+    echo "WARN_DB: ${ABANDONED_COUNT} old sessions marked abandoned"
+  fi
+
+  # 简报注入 (Tier 1, <=500 tokens)
+  BRIEFING=$(bash "$MCP_CLI" "$PROJECT_DIR" briefing_generate 2>/dev/null)
+  if [ -n "$BRIEFING" ] && [ "$BRIEFING" != "null" ]; then
+    echo ""
+    echo "=== 会话简报 (DB) ==="
+    echo "$BRIEFING"
+    echo ""
+  fi
+
+  # DB 统计速览
+  DB_STATS=$(bash "$MCP_CLI" "$PROJECT_DIR" stats_overview 2>/dev/null || echo '{}')
+  DB_SESSIONS=$(echo "$DB_STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_sessions','?'))" 2>/dev/null)
+  DB_MEMS=$(echo "$DB_STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_memories','?'))" 2>/dev/null)
+  echo "DB 速览: ${DB_SESSIONS:-?} 会话, ${DB_MEMS:-?} 记忆"
 fi
 
 # ============================================================

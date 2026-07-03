@@ -34,7 +34,7 @@ if [ -f "$CURRENT_PTR" ]; then
 fi
 # 回退：指针不存在时用 ls（兼容旧会话目录）
 if [ -z "$LATEST" ] || [ ! -f "$LATEST" ]; then
-  LATEST=$(ls -t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}\.md$' | head -1)
+  LATEST=$(ls -t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | head -1)
 fi
 
 if [ -z "$LATEST" ]; then
@@ -76,4 +76,16 @@ elif [ "$SUMMARY_STATE" = "empty" ]; then
   echo "STATE: needs_summary"
 else
   echo "STATE: complete"
+fi
+
+# Phase B: SQLite 补充检查（并行读取，不影响现有逻辑）
+MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
+if [ -x "$MCP_CLI" ] 2>/dev/null; then
+  DB_STATS=$(bash "$MCP_CLI" "$PROJECT_DIR" stats_overview 2>/dev/null || echo "")
+  if [ -n "$DB_STATS" ] && [ "$DB_STATS" != "null" ]; then
+    echo "DB_CHECK: available"
+    echo "DB_STATS: $(echo "$DB_STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'sessions={d.get(\"total_sessions\",\"?\")},memories={d.get(\"total_memories\",\"?\")},events={d.get(\"total_events\",\"?\")}')" 2>/dev/null || echo "?")"
+  else
+    echo "DB_CHECK: unavailable"
+  fi
 fi

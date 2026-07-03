@@ -32,7 +32,7 @@ if [ -d "$SESSIONS_DIR" ]; then
   if [ -f "$POINTER" ]; then
     SESSION_LOG=$(sed 's/\.md$/.log/' "$POINTER")
   else
-    SESSION_MD=$(ls -1t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}\.md$' | head -1)
+    SESSION_MD=$(ls -1t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | head -1)
     if [ -n "$SESSION_MD" ]; then
       SESSION_LOG="${SESSION_MD%.md}.log"
     fi
@@ -41,6 +41,13 @@ if [ -d "$SESSIONS_DIR" ]; then
     TS=$(date +%H:%M:%S)
     echo "- $TS $TOOL_NAME $SUMMARY" >> "$SESSION_LOG"
   fi
+fi
+
+# Phase 1b: SQLite 事件双写（Phase B — 并行写入）
+if [ -x "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh" ] 2>/dev/null; then
+  bash "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh" "$PROJECT_DIR" event_log \
+    "{\"tool_name\":\"$TOOL_NAME\",\"tool_input_summary\":\"$SUMMARY\",\"file_path\":\"${FILE_PATH:-}\"}" \
+    2>/dev/null || true
 fi
 
 # ============================================================

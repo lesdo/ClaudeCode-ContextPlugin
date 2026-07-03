@@ -126,6 +126,7 @@ session_index_tail() {
 
 session_index_migrate() {
   local dir="$1"
+  local skip_name="$2"
   local index="$dir/.session-index"
   local count=0
 
@@ -133,10 +134,16 @@ session_index_migrate() {
     [ -f "$f" ] || continue
     local name=$(basename "$f" .md)
     local date="${name:0:10}"
-    local time="${name:11:4}"
+    local time="${name:11:6}"
+    # 提取连续数字部分（兼容 HHMM 和 HHMMSS）
+    time=$(echo "$time" | grep -oE '^[0-9]+' | head -1)
+    [ -z "$time" ] && time="0000"
 
-    if ! echo "$time" | grep -qE '^[0-9]{4}$'; then
-      time=$(grep -oE "^# [0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}" "$f" 2>/dev/null | head -1 | grep -oE '[0-9]{4}$')
+    # 跳过当前会话
+    [ "$name" = "$skip_name" ] && continue
+
+    if ! echo "$time" | grep -qE '^[0-9]{4,6}$'; then
+      time=$(grep -oE "^# [0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}" "$f" 2>/dev/null | head -1 | grep -oE '[0-9]{4,6}$')
       [ -z "$time" ] && time="0000"
     fi
 
@@ -149,12 +156,51 @@ session_index_migrate() {
   echo "$count"
 }
 
+# ── 会话索引修复: 文件系统 → 索引（wrapper 被中断的补录安全网）──
+# 扫描 sessions/ 下所有标准名称 .md 文件，将未在索引中的条目追加写入。
+# 通过 session-start.sh 在每次会话启动时自动执行。
+# skip_name: 跳过当前会话（wrapper 尚未退出，索引不应有当前条目）。
+session_index_reconcile() {
+  local dir="$1"
+  local skip_name="$2"
+  local added=0 complete=0 skeleton=0
+
+  [ ! -d "$dir" ] && { echo "0 0 0"; return 0; }
+
+  for f in "$dir"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.md; do
+    [ -f "$f" ] || continue
+    local name=$(basename "$f" .md)
+    local date="${name:0:10}"
+    local time="${name:11:6}"
+    time=$(echo "$time" | grep -oE '^[0-9]+' | head -1)
+    [ -z "$time" ] && time="0000"
+
+    # 跳过当前会话
+    [ "$name" = "$skip_name" ] && continue
+
+    # 处理标准 YYYY-MM-DD_HHMM 或 YYYY-MM-DD_HHMMSS 格式
+    echo "$time" | grep -qE '^[0-9]{4,6}$' || continue
+
+    local found
+    found=$(session_index_find "$dir" "$date" "$time")
+    [ "$found" != "unknown" ] && continue
+
+    local status="complete"
+    grep -q "（待填充）" "$f" 2>/dev/null && status="skeleton"
+    session_index_append "$dir" "$date" "$time" "$status"
+    added=$((added + 1))
+    [ "$status" = "complete" ] && complete=$((complete + 1)) || skeleton=$((skeleton + 1))
+  done
+
+  echo "$added $complete $skeleton"
+}
+
 session_index_find() {
   local dir="$1" date="$2" time="$3"
   local index="$dir/.session-index"
   [ ! -f "$index" ] && { echo "unknown"; return 0; }
   local result
-  result=$(grep "{\"date\":\"$date\",\"time\":\"$time\"" "$index" 2>/dev/null | tail -1)
+  result=$(grep -F "{\"date\":\"$date\",\"time\":\"$time\"" "$index" 2>/dev/null | tail -1)
   if [ -n "$result" ]; then
     case "$result" in
       *'"status":"skeleton"'*) echo "skeleton"; return 0 ;;

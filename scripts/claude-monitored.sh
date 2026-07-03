@@ -67,7 +67,7 @@ echo "[启动检查] 会话文件..."
 
 mkdir -p "$CONTEXT_DIR/sessions"
 SESSION_DATE=$(date +%Y-%m-%d)
-SESSION_TIME=$(date +%H%M)
+SESSION_TIME=$(date +%H%M%S)
 SESSION_SLUG="${SESSION_DATE}_${SESSION_TIME}"
 SESSION_FILE="$CONTEXT_DIR/sessions/${SESSION_SLUG}.md"
 SESSION_TOKEN="session-$$-$(date +%s)-${RANDOM}"
@@ -107,6 +107,17 @@ SESSIONEOF
 touch "$SESSION_START_MARKER"
 echo "  ✓ 会话文件: sessions/${SESSION_SLUG}.md"
 
+# Phase B: DB 会话双写
+MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
+if [ -x "$MCP_CLI" ] 2>/dev/null; then
+  DB_RESULT=$(bash "$MCP_CLI" "$PROJECT_DIR" session_create \
+    "{\"date\":\"$SESSION_DATE\",\"time_val\":\"$SESSION_TIME\",\"slug\":\"$SESSION_SLUG\",\"pid\":$$,\"token\":\"$SESSION_TOKEN\"}" 2>/dev/null || echo '{}')
+  DB_ID=$(echo "$DB_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+  if [ -n "$DB_ID" ]; then
+    echo "  ✓ DB 会话: ${DB_ID}"
+  fi
+fi
+
 echo ""
 echo "[wrapper] 启动 Claude — 项目: $PROJECT_DIR"
 echo ""
@@ -144,8 +155,23 @@ echo "[wrapper] Claude 退出 (exit_code=$EXIT_CODE)"
 # 退出后处理
 # ============================================================
 
+# --- P1: 退出码分类函数 ---
+classify_exit_code() {
+  case "$1" in
+    0)   echo "OK" ;;
+    130) echo "SIGINT" ;;
+    137) echo "SIGKILL" ;;
+    143) echo "SIGTERM" ;;
+    127) echo "CMD_NOT_FOUND" ;;
+    126) echo "NOT_EXECUTABLE" ;;
+    1)   echo "GENERAL_ERROR" ;;
+    *)   echo "UNKNOWN" ;;
+  esac
+}
+
 # --- 3. 会话文件更新：文件变更 + 退出信息 ---
 END_TIME=$(date +%Y-%m-%dT%H:%M:%S+08:00)
+EXIT_LABEL=$(classify_exit_code "$EXIT_CODE")
 # 计算会话时长（纯 bash date +%s 算术，无需 python3）
 if [ -f "$SESSION_START_MARKER" ]; then
   START_EPOCH=$(stat -c %Y "$SESSION_START_MARKER" 2>/dev/null)
@@ -170,7 +196,7 @@ if [ -n "$SESSION_FILE" ]; then
   EXIT_BLOCK_FILE=$(mktemp)
   cat > "$EXIT_BLOCK_FILE" <<EXITEOF
 - **结束时间**: ${END_TIME}
-- **退出码**: ${EXIT_CODE}
+- **退出码**: ${EXIT_CODE} (${EXIT_LABEL})
 - **时长**: ${DURATION_MIN} 分钟
 
 ### 文件变更
@@ -195,7 +221,7 @@ EXITEOF
   fi
   rm -f "$EXIT_BLOCK_FILE"
 
-	  echo "[wrapper] 会话文件已更新: sessions/$(basename "$SESSION_FILE")"
+  echo "[wrapper] 会话文件已更新: sessions/$(basename "$SESSION_FILE")"
   if [ -n "$MODIFIED_FILES" ]; then
     CHANGED_COUNT=$(echo "$MODIFIED_FILES" | wc -l)
     echo "  文件变更: ${CHANGED_COUNT} 个文件"
@@ -203,6 +229,8 @@ EXITEOF
     echo "  文件变更: 无"
   fi
 fi
+
+# Phase B: DB 会话结束（由 memory-capture.sh Stop hook 处理，此处不再重复调用）
 
 # --- 3.5 追加会话索引 + 写入闭环校验（meta.redline 7c）---
 SESSION_STATUS="complete"
@@ -225,29 +253,38 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/session-archive.sh" "$CONTEXT_DIR/sessions" 
 rm -f "$SESSION_START_MARKER"
 rm -f "$HOME/.claude/.pending-backup"
 
-# --- 4. 退出状态判定（多信号） ---
+# --- 4. 退出状态判定（多信号 + P1 退出码分类诊断） ---
 echo ""
 echo "[退出判定]"
 
 if [ "$EXIT_CODE" = "0" ] || [ "$EXIT_CODE" = "130" ]; then
-    echo "  判定: 正常退出 (exit_code=$EXIT_CODE)"
+    echo "  判定: 正常退出 (exit_code=$EXIT_CODE, $EXIT_LABEL)"
     rm -f "$CRASH_FILE"
 else
-    echo "  判定: 非标准退出 (exit_code=$EXIT_CODE)"
-    echo "  （可能是手动关闭终端，下次启动时将检查会话记录完整性）"
+    echo "  判定: 异常退出 (exit_code=$EXIT_CODE, $EXIT_LABEL)"
 
-	    # 崩溃溯源: 追加 CRASH 标记到取证日志（黑匣子自包含）
-	    SESSION_LOG="${SESSION_FILE%.md}.log"
-	    if [ -f "$SESSION_LOG" ]; then
-	      echo "CRASH: exit_code=$EXIT_CODE time=$END_TIME project=$PROJECT_DIR" >> "$SESSION_LOG"
-	      echo "  .log 已追加 CRASH 标记: $SESSION_LOG"
-	    fi
+    # 按退出码给出诊断提示
+    case "$EXIT_CODE" in
+      137) echo "  诊断: 进程被 SIGKILL 终止（可能 OOM 或手动 kill -9）" ;;
+      143) echo "  诊断: 进程收到 SIGTERM（系统关闭或外部终止）" ;;
+      127) echo "  诊断: 命令未找到（PATH 或环境问题）" ;;
+      126) echo "  诊断: 命令不可执行（权限或二进制兼容性问题）" ;;
+        *) echo "  诊断: 未知异常，下次启动时将检查会话记录完整性" ;;
+    esac
+
+    # 崩溃溯源: 追加 CRASH 标记到取证日志（黑匣子自包含）
+    SESSION_LOG="${SESSION_FILE%.md}.log"
+    if [ -f "$SESSION_LOG" ]; then
+      echo "CRASH: exit_code=$EXIT_CODE label=$EXIT_LABEL time=$END_TIME project=$PROJECT_DIR" >> "$SESSION_LOG"
+      echo "  .log 已追加 CRASH 标记: $SESSION_LOG"
+    fi
     if [ ! -f "$SESSION_FILE" ]; then
         echo "  ⚠ 会话文件缺失，标记为异常"
         mkdir -p "$CONTEXT_DIR"
         cat > "$CRASH_FILE" <<EOF
 crash_time=$END_TIME
 exit_code=$EXIT_CODE
+label=$EXIT_LABEL
 project=$PROJECT_DIR
 EOF
         echo "  .crash 已写入: $CRASH_FILE"

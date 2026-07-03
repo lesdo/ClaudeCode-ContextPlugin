@@ -4,3 +4,8 @@
 .current-session
 .backup-changes
 .claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
