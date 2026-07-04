@@ -1,0 +1,14 @@
+{
+  "name": "context-plugin",
+  "description": "ClaudeCode-ContextPlugin v3.0 — 会话生命周期管理本地市场",
+  "owner": { "name": "13" },
+  "plugins": [
+    {
+      "name": "claudecode-context-plugin",
+      "source": ".",
+      "description": "Claude Code 上下文管理系统 — SQLite 结构化存储 + FTS5 全文搜索 + 6种记忆类型 + Hook 自动捕获管道",
+      "category": "development",
+      "homepage": "https://github.com/lesdo/ClaudeCode-ContextPlugin"
+    }
+  ]
+}

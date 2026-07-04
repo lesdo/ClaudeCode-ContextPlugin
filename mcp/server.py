@@ -12,22 +12,25 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from db_core import ensure_schema, get_db_path
-from db_ops import (
+from session_ops import (
     session_create, session_finalize, session_get, session_list,
     session_check_active, session_mark_abandoned, session_events,
     session_events_by_slug, session_compile_md,
     session_stats, session_find_status,
     event_log,
-    memory_search, memory_store, memory_get, memory_update, memory_delete, memory_list,
-    memory_hybrid_search, memory_reindex_vectors,
     memory_relation_create, memory_relations_get, memory_graph_get,
-    decision_record, decision_list,
-    pattern_register, pattern_list,
-    preference_get, preference_set,
     stats_overview,
     briefing_generate, briefing_get,
     decay_run, dedup_run,
 )
+from memory_ops import (
+    memory_search, memory_store, memory_get, memory_update, memory_delete, memory_list,
+    memory_hybrid_search, memory_reindex_vectors,
+    decision_record, decision_list,
+    pattern_register, pattern_list,
+    preference_get, preference_set,
+)
+from analytics import run_analytics, get_behavior_profile, get_analysis_runs, run_task_sync
 
 TOOLS = {
     "memory_search": {
@@ -255,6 +258,28 @@ TOOLS = {
     "decay_run": {
         "description": "Run type-aware decay on memories.",
         "inputSchema": {"type": "object", "properties": {}}
+    },
+    "get_behavior_profile": {
+        "description": "Query quantitative behavior profile. Dimension filter optional.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dimension": {"type": "string", "description": "Filter by dimension key"}
+            }
+        }
+    },
+    "get_analysis_runs": {
+        "description": "Query analysis run history.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10}
+            }
+        }
+    },
+    "run_task_sync": {
+        "description": "v4.5: Sync events to task_states table and refresh .planning/ JSON cache.",
+        "inputSchema": {"type": "object", "properties": {}}
     }
 }
 
@@ -280,43 +305,10 @@ def cli_main():
         "session_create": session_create,
         "session_finalize": session_finalize,
         "session_get": session_get,
-        "memory_relation_create": {
-        "description": "Create a typed relation between two memories (relates_to/depends_on/contradicts/extends/implements/derived_from).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "source_id": {"type": "string"},
-                "target_id": {"type": "string"},
-                "relation_type": {"type": "string", "default": "relates_to"},
-                "weight": {"type": "number", "default": 1.0}
-            },
-            "required": ["source_id", "target_id"]
-        }
-    },
-    "memory_relations_get": {
-        "description": "Get related memories via BFS graph traversal.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "mem_id": {"type": "string"},
-                "direction": {"type": "string", "default": "both"},
-                "max_depth": {"type": "integer", "default": 2}
-            },
-            "required": ["mem_id"]
-        }
-    },
-    "memory_graph_get": {
-        "description": "Get the full graph around a memory (nodes + edges).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "mem_id": {"type": "string"},
-                "max_depth": {"type": "integer", "default": 3}
-            },
-            "required": ["mem_id"]
-        }
-    },
-    "session_list": session_list,
+        "memory_relation_create": memory_relation_create,
+        "memory_relations_get": memory_relations_get,
+        "memory_graph_get": memory_graph_get,
+        "session_list": session_list,
         "session_check_active": session_check_active,
         "session_mark_abandoned": session_mark_abandoned,
         "session_events": session_events,
@@ -343,6 +335,10 @@ def cli_main():
         "decay_run": decay_run,
         "dedup_run": dedup_run,
         "ensure_schema": ensure_schema,
+        "run_analytics": run_analytics,
+        "get_behavior_profile": get_behavior_profile,
+        "get_analysis_runs": get_analysis_runs,
+        "run_task_sync": run_task_sync,
     }
 
     try:
@@ -351,7 +347,8 @@ def cli_main():
             result = {"error": f"Unknown command: {command}"}
         elif command == "session_check_active":
             result = handler(project_dir)
-        elif command in ("stats_overview", "briefing_get", "decay_run", "ensure_schema"):
+        elif command in ("stats_overview", "briefing_get", "decay_run",
+                         "ensure_schema", "run_analytics", "run_task_sync"):
             result = handler(project_dir)
         else:
             result = handler(project_dir, **args)
@@ -385,6 +382,9 @@ async def mcp_main():
             'memory_update': lambda: memory_update(project_dir, **arguments),
             'memory_delete': lambda: memory_delete(project_dir, **arguments),
             'memory_list': lambda: memory_list(project_dir, **arguments),
+            'memory_relation_create': lambda: memory_relation_create(project_dir, **arguments),
+            'memory_relations_get': lambda: memory_relations_get(project_dir, **arguments),
+            'memory_graph_get': lambda: memory_graph_get(project_dir, **arguments),
             'session_list': lambda: session_list(project_dir, **arguments),
             'session_get': lambda: session_get(project_dir, **arguments),
             'session_events': lambda: session_events(project_dir, **arguments),

@@ -42,9 +42,10 @@ echo "── Hook 脚本"
 
 scripts=(
   session-start.sh
-  auto-log.sh
-  guard.sh
-  exit-check.sh
+  post-tool.sh
+  memory-capture.sh
+  pre-compact.sh
+  post-compact.sh
 )
 HOOKS_DIR="${CLAUDE_PLUGIN_ROOT}/hooks"
 
@@ -119,7 +120,7 @@ fi
 echo ""
 echo "── 会话记录"
 
-detect_project_dir "$1"
+detect_project_dir "${1:-}"
 
 SESSIONS_DIR="$PROJECT_DIR/.claude/context/sessions"
 check "会话目录存在"   test -d "$SESSIONS_DIR"

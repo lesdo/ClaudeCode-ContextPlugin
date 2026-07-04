@@ -47,7 +47,23 @@ def get_db(project_dir: Optional[str] = None):
 
 # Schema initialization
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+
+def _migrate_v4(conn: sqlite3.Connection):
+    """Idempotent: add v4.0 columns if they don't exist."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()}
+
+    if 'stderr_summary' not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN stderr_summary TEXT")
+    if 'duration_ms' not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN duration_ms INTEGER")
+
+    # Add exit_code index if not present (idempotent via IF NOT EXISTS)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_exit_code ON events(exit_code)"
+    )
+
 
 def init_schema(conn: sqlite3.Connection):
     """Initialize database schema (idempotent)."""
@@ -115,10 +131,13 @@ def init_schema(conn: sqlite3.Connection):
             tool_input_summary TEXT,
             file_path TEXT,
             exit_code INTEGER,
+            stderr_summary TEXT,
+            duration_ms INTEGER,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
         CREATE INDEX IF NOT EXISTS idx_events_tool ON events(tool_name);
+        CREATE INDEX IF NOT EXISTS idx_events_exit_code ON events(exit_code);
 
         -- Decisions table
         CREATE TABLE IF NOT EXISTS decisions (
@@ -221,6 +240,44 @@ def init_schema(conn: sqlite3.Connection):
             details TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
+
+        -- v4.0: Behavior profile (quantitative analysis results)
+        CREATE TABLE IF NOT EXISTS behavior_profile (
+            dimension TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            confidence REAL DEFAULT 1.0,
+            source TEXT DEFAULT 'quantitative',
+            updated_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (dimension, key)
+        );
+
+        -- v4.0: Analysis runs (audit trail)
+        CREATE TABLE IF NOT EXISTS analysis_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            triggered_by TEXT DEFAULT 'scheduler',
+            sessions_analyzed INTEGER DEFAULT 0,
+            events_analyzed INTEGER DEFAULT 0,
+            results_summary TEXT,
+            duration_ms INTEGER,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        -- v4.5: Task persistence (cross-session task states)
+        CREATE TABLE IF NOT EXISTS task_states (
+            task_id TEXT PRIMARY KEY,
+            plan_slug TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            description TEXT,
+            status TEXT DEFAULT 'pending' CHECK(status IN ('pending','in_progress','completed','abandoned')),
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            completed_at TEXT,
+            source_session_id TEXT REFERENCES sessions(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_states_plan ON task_states(plan_slug);
+        CREATE INDEX IF NOT EXISTS idx_task_states_status ON task_states(status);
+        CREATE INDEX IF NOT EXISTS idx_behavior_profile_dim ON behavior_profile(dimension);
     """)
 
     # Record schema version
@@ -232,6 +289,9 @@ def init_schema(conn: sqlite3.Connection):
             "INSERT OR REPLACE INTO schema_version(version) VALUES (?)",
             (SCHEMA_VERSION,)
         )
+
+    # ── v4.0 migrations: add columns if missing (idempotent) ──
+    _migrate_v4(conn)
 
     # Create stats view
     conn.execute("""

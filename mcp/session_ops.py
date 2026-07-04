@@ -40,21 +40,29 @@ def session_create(project_dir: Optional[str] = None,
 
 def session_finalize(project_dir: Optional[str] = None,
                      session_id: Optional[str] = None,
+                     slug: Optional[str] = None,
                      summary: Optional[str] = None,
                      context_summary: Optional[str] = None,
                      exit_code: Optional[int] = None,
                      status: str = 'completed') -> dict:
-    """Finalize a session on exit."""
+    """Finalize a session on exit. Uses session_id > slug > active lookup."""
     now = now_iso()
     with get_db(project_dir) as conn:
         if session_id is None:
-            row = conn.execute(
-                "SELECT id FROM sessions WHERE status='active' ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
-            if row:
-                session_id = row['id']
+            if slug:
+                row = conn.execute(
+                    "SELECT id FROM sessions WHERE slug=?", (slug,)
+                ).fetchone()
+                if row:
+                    session_id = row['id']
             else:
-                return {"error": "No active session found"}
+                row = conn.execute(
+                    "SELECT id FROM sessions WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+                if row:
+                    session_id = row['id']
+        if session_id is None:
+            return {"error": "No session found"}
 
         # Calculate duration
         start = conn.execute(
@@ -127,7 +135,7 @@ def session_mark_abandoned(project_dir: Optional[str] = None,
     Returns the number of rows affected."""
     with get_db(project_dir) as conn:
         if session_id:
-            cur = conn.execute("UPDATE sessions SET abandoned=1 WHERE id=?", (session_id,))
+            cur = conn.execute("UPDATE sessions SET abandoned=1, status='skeleton' WHERE id=?", (session_id,))
             return {"rowcount": cur.rowcount}
 
         # Count active sessions
@@ -145,12 +153,12 @@ def session_mark_abandoned(project_dir: Optional[str] = None,
         ).fetchone()
         if newest and exclude_id:
             cur = conn.execute(
-                "UPDATE sessions SET abandoned=1 WHERE status='active' AND abandoned=0 AND id != ?",
+                "UPDATE sessions SET abandoned=1, status='skeleton' WHERE status='active' AND abandoned=0 AND id != ?",
                 (exclude_id,)
             )
         elif newest:
             cur = conn.execute(
-                "UPDATE sessions SET abandoned=1 WHERE status='active' AND abandoned=0 AND id != ?",
+                "UPDATE sessions SET abandoned=1, status='skeleton' WHERE status='active' AND abandoned=0 AND id != ?",
                 (newest[0],)
             )
         else:
@@ -234,7 +242,7 @@ def session_compile_md(project_dir: Optional[str] = None,
             lines.append(f"- **结束时间**: {session['end_time']}")
             lines.append(f"- **退出码**: {session['exit_code'] or '?'}")
             lines.append(f"- **时长**: {session['duration_min']} 分钟" if session['duration_min'] else "- **时长**: 未知")
-            lines.append(f"- **状态**: {'⚠ 异常退出' if session['status'] == 'abandoned' else '✅ 正常结束'}")
+            lines.append(f"- **状态**: {'⚠ 异常退出' if session['abandoned'] else '✅ 正常结束'}")
         else:
             lines.append("（会话未正常结束）")
         lines.append("")
@@ -301,8 +309,10 @@ def event_log(project_dir: Optional[str] = None,
               tool_name: str = "",
               tool_input_summary: Optional[str] = None,
               file_path: Optional[str] = None,
-              exit_code: Optional[int] = None) -> dict:
-    """Log a tool call event to the events table."""
+              exit_code: Optional[int] = None,
+              stderr_summary: Optional[str] = None,
+              duration_ms: Optional[int] = None) -> dict:
+    """Log a tool call event to the events table. v4.0: +stderr_summary, +duration_ms."""
     now = datetime.now().strftime('%H:%M:%S')
     with get_db(project_dir) as conn:
         if session_id is None:
@@ -313,9 +323,11 @@ def event_log(project_dir: Optional[str] = None,
         if session_id is None:
             return {"error": "No active session found"}
         conn.execute("""
-            INSERT INTO events (session_id, timestamp, tool_name, tool_input_summary, file_path, exit_code)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (session_id, now, tool_name, tool_input_summary, file_path, exit_code))
+            INSERT INTO events (session_id, timestamp, tool_name, tool_input_summary,
+                               file_path, exit_code, stderr_summary, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (session_id, now, tool_name, tool_input_summary, file_path,
+              exit_code, stderr_summary, duration_ms))
 def stats_overview(project_dir: Optional[str] = None) -> dict:
     with get_db(project_dir) as conn:
         row = conn.execute("SELECT * FROM stats_overview").fetchone()
@@ -331,7 +343,7 @@ def session_stats(project_dir: Optional[str] = None) -> dict:
             "SELECT COUNT(*) as c FROM sessions WHERE status='completed'"
         ).fetchone()['c']
         skeleton = conn.execute(
-            "SELECT COUNT(*) as c FROM sessions WHERE status IN ('active','abandoned')"
+            "SELECT COUNT(*) as c FROM sessions WHERE status IN ('active','skeleton')"
         ).fetchone()['c']
         return {"total": total, "complete": complete, "skeleton": skeleton}
 
@@ -350,7 +362,7 @@ def session_find_status(project_dir: Optional[str] = None,
         status = row['status']
         if status == 'completed':
             return "complete"
-        elif status in ('active', 'abandoned'):
+        elif status in ('active', 'skeleton'):
             return "skeleton"
         return "unknown"
 

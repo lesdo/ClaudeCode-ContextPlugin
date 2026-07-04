@@ -1,14 +1,14 @@
 #!/bin/bash
 # post-compact.sh — PostCompact hook: 从文件 + DB 恢复关键上下文
-set -euo pipefail
+set -uo pipefail  # fail-open: errors logged, always exit 0
 # 文件优先（compaction 前 pre-compact 写入，compaction 后必然存在）
 # DB 作为补充（可能有更新的数据）
 CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/_common.sh"
-detect_project_dir "$1"
+detect_project_dir "${1:-}"
 
 MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
-BRIEFING_FILE="$PROJECT_DIR/.claude/context/briefing/active.md"
+BRIEFING_FILE="$PROJECT_DIR/.context/briefing/active.md"
 
 echo "=== 恢复上下文 (post-compact) ==="
 echo ""

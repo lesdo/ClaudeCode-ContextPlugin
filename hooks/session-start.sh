@@ -1,6 +1,6 @@
 #!/bin/bash
 # SessionStart hook — 项目初始化 + 画像/规则/上下文注入 + 会话状态/管理规则
-set -euo pipefail
+set -uo pipefail  # fail-open: errors logged, always exit 0
 # 合并 project-init.sh + context-inject.sh + session-rules.sh，单一入口，单一 source
 # 测试: bash ~/.claude/tools/session-start.sh [项目目录]
 
@@ -13,8 +13,9 @@ case "$PROJECT_DIR" in
   *"/.claude/context/"*) exit 0 ;;
 esac
 
-CONTEXT_DIR="$PROJECT_DIR/.claude/context"
-PROJECT_MD="$CONTEXT_DIR/project.md"
+CONTEXT_DIR="$PROJECT_DIR/.context"
+CLAUDE_CONTEXT_DIR="$PROJECT_DIR/.claude/context"
+PROJECT_MD="$CLAUDE_CONTEXT_DIR/project.md"
 MEMORY_DIR="$PROJECT_DIR/.claude/memory"
 SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
 CLAUDE_MD="$PROJECT_DIR/CLAUDE.md"
@@ -28,31 +29,32 @@ initialized=0
 items=""
 
 if [ ! -f "$PROJECT_MD" ]; then
-  mkdir -p "$CONTEXT_DIR"
-  cat > "$PROJECT_MD" << PROJECTEOF
+  mkdir -p "$CLAUDE_CONTEXT_DIR"
+  cat > "$PROJECT_MD" << 'PROJECTEOF'
 ---
-name: $PROJECT_NAME
+name: %NAME%
 description: （待补充）
 type: project
-updated: $TODAY
+updated: %DATE%
 ---
 
 ## 目标
 
-（待补充）
+（待补充：这个项目要解决什么问题）
 
 ## 核心原则
 
-（待补充）
+（待补充：架构约束、技术选型底线、团队约定）
 
 ## 关键决策
 
-（待补充）
+（待补充：记录"为什么选了 A 而不是 B"，每条决策标注日期）
 
-## 已执行
+## 架构
 
-（待补充）
+详见 `docs/architecture.md`。
 PROJECTEOF
+  sed -i "s/%NAME%/$PROJECT_NAME/g; s/%DATE%/$TODAY/g" "$PROJECT_MD"
   initialized=1
   items="$items  ✓ .claude/context/project.md
 "
@@ -69,7 +71,7 @@ BRIEFING_DIR="$CONTEXT_DIR/briefing"
 if [ ! -d "$BRIEFING_DIR" ]; then
   mkdir -p "$BRIEFING_DIR"
   initialized=1
-  items="$items  ✓ .claude/context/briefing/
+  items="$items  ✓ .context/briefing/
 "
 fi
 
@@ -176,13 +178,13 @@ fi
 # ============================================================
 echo "=== 会话记录状态 ==="
 
-SESSIONS_DIR="$PROJECT_DIR/.claude/context/sessions"
+SESSIONS_DIR="$CONTEXT_DIR/sessions"
 
 if [ ! -d "$SESSIONS_DIR" ]; then
   echo "状态: 无会话目录（首次运行？）"
   echo ""
   echo "=== 会话管理规则 ==="
-  echo "首次进入项目，.claude/context/ 目录将在首次会话后自动创建。"
+  echo "首次进入项目，.context/ 和 .claude/context/ 目录将在首次会话后自动创建。"
   exit 0
 fi
 
@@ -193,7 +195,7 @@ if [ -z "$SESSION_FILES" ]; then
   echo "状态: 无历史会话记录"
   echo ""
   echo "=== 会话管理规则 ==="
-  echo "会话文件: 维护 .claude/context/sessions/ 下的会话文件"
+  echo "会话文件: 维护 .context/sessions/ 下的会话文件"
   echo "格式: YYYY-MM-DD_HHMM.md，摘要写入文件内 **摘要** 字段"
   echo "摘要/上下文/任务: 由 Claude 填充，自动信息段不可修改"
   echo "任务标记: ### [阻塞] / [进行中] / [完成] 标题"
@@ -218,7 +220,7 @@ fi
 echo "$CURRENT_SESSION" > "$SESSIONS_DIR/.current-session"
 
 # ── P2: 崩溃残留检测 + 严重度分级（L1/L2/L3）──
-CRASH_FILE="$CONTEXT_DIR/.crash"
+CRASH_FILE="$CLAUDE_CONTEXT_DIR/.crash"
 CRASH_SEVERITY=""
 if [ -f "$CRASH_FILE" ]; then
   echo ""
@@ -233,7 +235,31 @@ HISTORICAL=$(echo "$SESSION_FILES" | sed -n '2,$p')
 
 # ── 会话统计 (Phase D): SQLite session_stats 优先，.session-index 兜底 ──
 MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
-MCP_HEALTH="${MCP_HEALTH:-unknown}"
+# ── SQLite 健康检查（必须在会话统计和简报之前）──
+MCP_HEALTH="unknown"
+
+if [ ! -x "$MCP_CLI" ] 2>/dev/null; then
+  echo ""
+  echo "⚠ MCP: mcp-cli.sh 不可用（文件缺失或无执行权限）"
+  MCP_HEALTH="missing"
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo ""
+  echo "⚠ MCP: python3 未安装 — SQLite 管线不可用"
+  MCP_HEALTH="no_python"
+else
+  HEALTH_OUT=$(bash "$MCP_CLI" "$PROJECT_DIR" ensure_schema 2>&1)
+  HEALTH_EXIT=$?
+  if [ $HEALTH_EXIT -ne 0 ]; then
+    echo ""
+    echo "⚠ MCP: SQLite 管线异常（ensure_schema 失败, exit=$HEALTH_EXIT）"
+    echo "  详情: ${HEALTH_OUT:-(无输出)}"
+    MCP_HEALTH="error"
+  else
+    MCP_HEALTH="ok"
+  fi
+fi
+
+BRIEFING_FILE="$CONTEXT_DIR/briefing/active.md"
 HIST_TOTAL=0; HIST_COMPLETE=0; HIST_SKELETON=0
 
 if [ "$MCP_HEALTH" = "ok" ]; then
@@ -310,34 +336,8 @@ else
 fi
 
 # ============================================================
-# Phase B: SQLite 集成 — 健康哨兵 + 会话状态 + 简报注入
+# Phase B: SQLite 集成 — 简报注入
 # ============================================================
-# MCP_CLI / MCP_HEALTH 已在会话统计段提前初始化，此处做详细健康检查
-MCP_HEALTH="unknown"
-
-if [ ! -x "$MCP_CLI" ] 2>/dev/null; then
-  echo ""
-  echo "⚠ MCP: mcp-cli.sh 不可用（文件缺失或无执行权限）"
-  MCP_HEALTH="missing"
-elif ! command -v python3 >/dev/null 2>&1; then
-  echo ""
-  echo "⚠ MCP: python3 未安装 — SQLite 管线不可用"
-  MCP_HEALTH="no_python"
-else
-  # ── 健康哨兵: 快速验证 Python + MCP + DB 可用性 ──
-  HEALTH_OUT=$(bash "$MCP_CLI" "$PROJECT_DIR" ensure_schema 2>&1)
-  HEALTH_EXIT=$?
-  if [ $HEALTH_EXIT -ne 0 ]; then
-    echo ""
-    echo "⚠ MCP: SQLite 管线异常（ensure_schema 失败, exit=$HEALTH_EXIT）"
-    echo "  详情: ${HEALTH_OUT:-(无输出)}"
-    MCP_HEALTH="error"
-  else
-    MCP_HEALTH="ok"
-  fi
-fi
-
-BRIEFING_FILE="$CONTEXT_DIR/briefing/active.md"
 
 if [ "$MCP_HEALTH" = "ok" ]; then
   # bug#2: mark crash residues as abandoned (auto-skips when only 1 active)
@@ -375,9 +375,82 @@ elif [ -f "$BRIEFING_FILE" ] && [ -s "$BRIEFING_FILE" ]; then
 fi
 
 # ============================================================
+# v4.0: 活跃陷阱注入 — 近 30 天高频错误工具
+# ============================================================
+
+if [ "$MCP_HEALTH" = "ok" ]; then
+  PITFALL_JSON=$(bash "$MCP_CLI" "$PROJECT_DIR" get_behavior_profile \
+    '{"dimension":"error_rate"}' 2>/dev/null || echo '{"profile":[]}')
+  PITFALL_COUNT=$(echo "$PITFALL_JSON" | python3 -c "
+import sys,json
+p = json.load(sys.stdin).get('profile',[])
+print(len([x for x in p if float(x['value']) > 0.1]))
+" 2>/dev/null || echo "0")
+
+  if [ "$PITFALL_COUNT" -gt 0 ] 2>/dev/null; then
+    echo "=== 活跃陷阱（近 30 天高频错误） ==="
+    echo "$PITFALL_JSON" | python3 -c "
+import sys,json
+profile = json.load(sys.stdin).get('profile',[])
+for p in profile:
+    if float(p['value']) > 0.1:
+        print(f\"  ⚠ {p['key']}: {int(float(p['value'])*100)}% 错误率\")
+" 2>/dev/null
+    echo ""
+  fi
+fi
+
+# ============================================================
+# v4.5: 活跃任务注入 — 跨会话未完成任务
+# ============================================================
+
+PLANNING_INDEX="${PROJECT_DIR}/.planning/index.json"
+export PLANNING_INDEX
+if [ -f "$PLANNING_INDEX" ]; then
+  TASK_OUTPUT=$(python3 -c "
+import json, os
+
+idx_path = os.environ.get('PLANNING_INDEX', '')
+with open(idx_path, encoding='utf-8') as f:
+    idx = json.load(f)
+
+active = idx.get('active', '')
+plans = idx.get('plans', {})
+if not active or plans.get(active, {}).get('status') not in ('active', 'paused'):
+    exit(0)
+
+state_path = os.path.join(os.path.dirname(idx_path), active, 'state.json')
+if not os.path.exists(state_path):
+    exit(0)
+
+with open(state_path, encoding='utf-8') as f:
+    state = json.load(f)
+
+tasks = [t for t in state.get('tasks', [])
+         if t.get('status') not in ('completed', 'abandoned')]
+if not tasks:
+    exit(0)
+
+print('=== 活跃任务（跨会话未完成） ===')
+print('')
+marks = {'pending': '[ ]', 'in_progress': '[→]'}
+for t in tasks:
+    mark = marks.get(t.get('status', ''), '[?]')
+    subj = t.get('subject', 'Untitled')
+    tid = t.get('id', '')[:8]
+    print(f'  {mark} {subj}  (id: {tid})')
+print('')
+" 2>/dev/null || true)
+
+  if [ -n "$TASK_OUTPUT" ]; then
+    echo "$TASK_OUTPUT"
+  fi
+fi
+
+# ============================================================
 # 会话管理规则（指针式 — 详细规则见 CLAUDE.md 和 ~/.claude/tools/session-start.sh 注释）
 # ============================================================
 echo ""
-echo "会话生命周期: 启动(hook注入)→运行(取证)→退出(exit-check→填充→claude-exit)"
+echo "会话生命周期: 启动(hook注入)→运行(取证)→退出(Stop hook→wrapper编译→claude-exit)"
 echo "崩溃恢复: .crash残留→检查.log取证→接管或重建"
 echo "详见 docs/architecture.md 和 ~/.claude/rules.redline"

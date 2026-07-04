@@ -10,18 +10,17 @@ ClaudeCode-ContextPlugin/
 ├── hooks/
 │   ├── hooks.json                ← 6 事件 7 脚本注册
 │   ├── session-start.sh          ← SessionStart: 画像+规则+项目+简报+崩溃诊断
-│   ├── post-tool.sh              ← PostToolUse: 事件(SQLite优先/.log兜底)+红线守卫
-│   ├── exit-check.sh             ← Stop: 会话完整性查询
+│   ├── post-tool.sh              ← PostToolUse: 事件(SQLite)+红线守卫
 │   ├── memory-capture.sh         ← Stop: 记忆捕获+衰减+清理
 │   ├── pre-compact.sh            ← PreCompact: 简报快照→DB+文件
 │   ├── post-compact.sh           ← PostCompact: 文件→上下文恢复
 │   └── lib/
-│       ├── _common.sh            ← 共享库: PATH+备份+索引+crash_diagnose
-│       └── _mcp-client.sh        ← MCP 客户端函数
+│       └── _common.sh            ← 共享库: PATH+备份+索引+crash_diagnose
 ├── mcp/                          ← SQLite MCP Server (Python)
 │   ├── server.py                 ← CLI + MCP/stdio 入口
-│   ├── db_core.py                ← Schema (8表+FTS5+WAL)
-│   ├── db_ops.py                 ← CRUD (会话/事件/记忆/决策/简报)
+│   ├── db_core.py                ← Schema (8表+FTS5+WAL) + 连接管理
+│   ├── session_ops.py            ← 会话 CRUD (创建/终结/事件/编译)
+│   ├── memory_ops.py             ← 记忆/决策/偏好 CRUD + 衰减
 │   ├── vectors.py                ← TF-IDF + sqlite-vec 混合搜索
 │   ├── migrate.py                ← .md/.log → SQLite 迁移
 │   ├── demo.py / stress_test.py  ← 演示+压力测试
@@ -29,14 +28,13 @@ ClaudeCode-ContextPlugin/
 ├── scripts/
 │   ├── claude-monitored.sh       ← 包装器: 骨架→监视→编译→退出
 │   ├── mcp-cli.sh                ← bash↔Python CLI 桥接
-│   ├── backup-claude.sh          ← 备份: ~/.claude/ tar.gz 快照
 │   ├── check-health.sh           ← 健康检查: 全量系统验证
 │   ├── session-archive.sh        ← 归档: 30天旧会话→archive/
 │   ├── claude-exit.sh            ← 退出: taskkill 清理
 │   ├── auto-checkpoint.sh        ← Stop: 自动检查点
 │   ├── audit-plugin.sh           ← 架构自审计: 10维度报告
 │   └── validate.sh               ← SKILL.md 验证
-├── skills/                       ← 10 个 skill (7 Continuum + 3 自建)
+├── skills/                       ← 9 个 skill (7 Continuum + 2 自建)
 ├── tests/                        ← L2 测试框架 (111 tests)
 ├── CLAUDE.md                     ← 本文件
 └── .gitignore

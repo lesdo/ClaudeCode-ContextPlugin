@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-set -euo pipefail
+set -uo pipefail  # fail-open: errors logged, always exit 0
 # claude-monitored.sh — 带崩溃监视 + 备份提醒的 Claude 启动器
 # ============================================================
 
@@ -22,8 +22,9 @@ source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/_common.sh"
 
 PROJECT_DIR="${1:-.}"
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
-CONTEXT_DIR="$PROJECT_DIR/.claude/context"
-CRASH_FILE="$CONTEXT_DIR/.crash"
+CONTEXT_DIR="$PROJECT_DIR/.context"
+CLAUDE_CONTEXT_DIR="$PROJECT_DIR/.claude/context"
+CRASH_FILE="$CLAUDE_CONTEXT_DIR/.crash"
 # ============================================================
 # 启动前检查
 # ============================================================
@@ -54,7 +55,7 @@ if [ -d "$BACKUP_DIR" ]; then
         NOW_EPOCH=$(date +%s)
         DAYS=$(( (NOW_EPOCH - LATEST_EPOCH) / 86400 ))
         if [ "$DAYS" -gt "$backup_expire_days" ] 2>/dev/null; then
-          echo "⚠ 上次备份 ${DAYS} 天前（超过 ${backup_expire_days} 天），建议: bash ${CLAUDE_PLUGIN_ROOT}/scripts/backup-claude.sh"
+          echo "⚠ 上次备份 ${DAYS} 天前（超过 ${backup_expire_days} 天），建议备份（下次会话中说"建议备份"即可自动触发）"
           echo ""
         fi
       fi
@@ -175,78 +176,31 @@ END_TIME=$(date +%Y-%m-%dT%H:%M:%S+08:00)
 EXIT_LABEL=$(classify_exit_code "$EXIT_CODE")
 SESSION_SLUG="${SESSION_DATE}_${SESSION_TIME}"
 
-# 计算会话时长
-if [ -f "$SESSION_START_MARKER" ]; then
-  START_EPOCH=$(stat -c %Y "$SESSION_START_MARKER" 2>/dev/null)
-  END_EPOCH=$(date +%s)
-  DURATION_MIN=$(( (END_EPOCH - START_EPOCH) / 60 ))
-else
-  DURATION_MIN="?"
-fi
-
-echo "  会话时长: ${DURATION_MIN} 分钟"
-
-# 主路径: 从 SQLite 编译 .md
+# 会话时长（SQLite 已记录 start_time，此处仅展示）
 SESSION_FILE="$CONTEXT_DIR/sessions/${SESSION_SLUG}.md"
-COMPILED=0
 MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
 
+# 从 SQLite 编译 .md（Phase C 主路径，SQLite 始终可用）
 if [ -x "$MCP_CLI" ] 2>/dev/null; then
   COMPILED_JSON=$(bash "$MCP_CLI" "$PROJECT_DIR" session_compile_md \
     "{\"slug\":\"$SESSION_SLUG\"}" 2>/dev/null || echo "")
   if [ -n "$COMPILED_JSON" ] && [ "$COMPILED_JSON" != "null" ]; then
-    # JSON 字符串解码（python3 json.dumps 包装了 markdown）
     echo "$COMPILED_JSON" | python3 -c "import sys,json; sys.stdout.write(json.load(sys.stdin))" > "$SESSION_FILE" 2>/dev/null
     if [ -s "$SESSION_FILE" ]; then
-      COMPILED=1
       echo "[wrapper] 会话文件已编译 (SQLite): sessions/${SESSION_SLUG}.md"
     fi
   fi
 fi
 
-# 兜底: SQLite 不可用时保留原 sed 方式
-if [ "$COMPILED" -eq 0 ]; then
-  MODIFIED_FILES=""
-  if [ -f "$SESSION_START_MARKER" ]; then
-    MODIFIED_FILES=$(find "$PROJECT_DIR" -newer "$SESSION_START_MARKER" -type f -not -path "*/.claude/*" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/__pycache__/*" -not -path "*/ClaudecodeBackup/*" 2>/dev/null | head -50 | sort)
-  fi
-
-  if [ -f "$SESSION_FILE" ]; then
-    EXIT_BLOCK_FILE=$(mktemp)
-    cat > "$EXIT_BLOCK_FILE" <<EXITEOF
-- **结束时间**: ${END_TIME}
-- **退出码**: ${EXIT_CODE} (${EXIT_LABEL})
-- **时长**: ${DURATION_MIN} 分钟
-
-### 文件变更
-
-$(if [ -n "$MODIFIED_FILES" ]; then
-  echo "$MODIFIED_FILES" | while IFS= read -r f; do
-    echo "- \`${f}\`"
-  done
-else
-  echo "（无文件变更）"
-fi)
-EXITEOF
-    if grep -q "（会话结束后自动填充）" "$SESSION_FILE" 2>/dev/null; then
-      sed -i "/（会话结束后自动填充）/{
-        r $EXIT_BLOCK_FILE
-        d
-      }" "$SESSION_FILE"
-    fi
-    rm -f "$EXIT_BLOCK_FILE"
-    echo "[wrapper] 会话文件已更新 (sed): sessions/${SESSION_SLUG}.md"
-  fi
-
-  if [ -n "$MODIFIED_FILES" ]; then
-    CHANGED_COUNT=$(echo "$MODIFIED_FILES" | wc -l)
-    echo "  文件变更: ${CHANGED_COUNT} 个文件"
-  else
-    echo "  文件变更: 无"
-  fi
+# Phase D: 终结合话（wrapper 是唯一生杀权持有者）
+# 不在 Stop hook 中关库 — compaction 时 Stop 也会触发，提前关库会导致事件丢失
+if [ -x "$MCP_CLI" ] 2>/dev/null; then
+  FINALIZE_RESULT=$(bash "$MCP_CLI" "$PROJECT_DIR" session_finalize \
+    "{\"slug\":\"$SESSION_SLUG\",\"exit_code\":$EXIT_CODE}" 2>/dev/null || echo '{}')
+  FINALIZE_STATUS=$(echo "$FINALIZE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','error'))" 2>/dev/null || echo "error")
+  echo "[wrapper] DB 会话已终结: ${SESSION_SLUG} (status=${FINALIZE_STATUS})"
 fi
 
-# Phase D: 会话索引由 SQLite sessions 表替代（session_create 已写入，session_finalize 更新状态）
 # .session-index 不再追加。历史索引保留供兜底查询。
 
 # --- 3.6 归档旧会话（30天前移入 archive/YYYY-MM/）---
@@ -313,7 +267,7 @@ else
   if diff -q "$LAST_BACKUP_STATE" "$CURRENT_STATE" > /dev/null 2>&1; then
     echo "  ✓ 快照一致（自上次备份后无内容变更）"
   else
-    echo "  ⚠ 上次备份后有配置变更，建议执行: bash ${CLAUDE_PLUGIN_ROOT}/scripts/backup-claude.sh \"变更说明\""
+    echo "  ⚠ 上次备份后有配置变更，建议备份（下次会话中说"建议备份"即可自动触发）"
     echo "  变更内容:"
     diff "$LAST_BACKUP_STATE" "$CURRENT_STATE" 2>/dev/null | head -10
   fi

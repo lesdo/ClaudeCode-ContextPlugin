@@ -1,62 +1,44 @@
 #!/bin/bash
 # PostToolUse hook — 合并: 取证日志(auto-log) + 配置守护(guard)
-set -euo pipefail
-# 单次 stdin 解析，顺序执行，纯 bash，零外部依赖
-# 测试: echo '{"tool_name":"Edit","tool_input":{"file_path":"'$HOME'/.claude/CLAUDE.md"}}' | bash ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool.sh [项目目录]
+# v4.5: JSON 解析改为 python3 脚本（_extract_tool_event.py）
+set -uo pipefail  # fail-open: errors logged, always exit 0
 
 CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/_common.sh"
-detect_project_dir "$1"
+detect_project_dir "${1:-}"
 
 INPUT=$(cat 2>/dev/null)
 [ -z "$INPUT" ] && exit 0
 
-# ── 一次性 JSON 提取（纯 bash sed，零 python 开销）──
-TOOL_NAME=$(echo "$INPUT" | sed -n 's/.*"tool_name":"\([^"]*\)".*/\1/p')
+# ── v4.5: python3 一次性 JSON 提取 ──
+EXTRACT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/_extract_tool_event.py"
+PYTHON_EXTRACT=$(python3 "$EXTRACT_SCRIPT" 2>/dev/null <<< "$INPUT" || true)
+
+# 解析提取值
+TOOL_NAME=""; FILE_PATH=""; SUMMARY=""; EXIT_CODE=""; STDERR_SUMMARY=""
+while IFS='=' read -r key val; do
+  case "$key" in
+    TOOL_NAME) TOOL_NAME="$val" ;;
+    FILE_PATH) FILE_PATH="$val" ;;
+    SUMMARY) SUMMARY="$val" ;;
+    EXIT_CODE) EXIT_CODE="$val" ;;
+    STDERR_SUMMARY) STDERR_SUMMARY="$val" ;;
+  esac
+done <<< "$PYTHON_EXTRACT"
+
 [ -z "$TOOL_NAME" ] && exit 0
 
-FILE_PATH=$(echo "$INPUT" | sed -n 's/.*"file_path":"\([^"]*\)".*/\1/p')
-
-SUMMARY=""
-for key in file_path command description pattern url query skill subject taskId cron id; do
-  SUMMARY=$(echo "$INPUT" | sed -n "s/.*\"$key\":\"\\([^\"]*\\)\".*/\\1/p" | head -1)
-  [ -n "$SUMMARY" ] && break
-done
-[ -z "$SUMMARY" ] && SUMMARY="-"
-
 # ============================================================
-# Phase 1: 事件记录 — SQLite 优先，.log 兜底 (Phase B 迁移)
+# Phase 1: 事件记录 — SQLite event_log
 # ============================================================
 MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
-EVENT_LOGGED=0
 
-# 主路径: SQLite event_log
 if [ -x "$MCP_CLI" ] 2>/dev/null; then
-  if bash "$MCP_CLI" "$PROJECT_DIR" event_log \
-    "{\"tool_name\":\"$TOOL_NAME\",\"tool_input_summary\":\"$SUMMARY\",\"file_path\":\"${FILE_PATH:-}\"}" \
-    2>/dev/null; then
-    EVENT_LOGGED=1
-  fi
-fi
-
-# 兜底路径: .log 文件追加（SQLite 不可用时）
-if [ "$EVENT_LOGGED" -eq 0 ]; then
-  SESSIONS_DIR="$PROJECT_DIR/.claude/context/sessions"
-  if [ -d "$SESSIONS_DIR" ]; then
-    POINTER="$SESSIONS_DIR/.current-session"
-    if [ -f "$POINTER" ]; then
-      SESSION_LOG=$(sed 's/\.md$/.log/' "$POINTER")
-    else
-      SESSION_MD=$(ls -1t "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | head -1)
-      if [ -n "$SESSION_MD" ]; then
-        SESSION_LOG="${SESSION_MD%.md}.log"
-      fi
-    fi
-    if [ -n "${SESSION_LOG:-}" ]; then
-      TS=$(date +%H:%M:%S)
-      echo "- $TS $TOOL_NAME $SUMMARY" >> "$SESSION_LOG"
-    fi
-  fi
+  EVENT_JSON="{\"tool_name\":\"$TOOL_NAME\",\"tool_input_summary\":\"$SUMMARY\",\"file_path\":\"${FILE_PATH:-}\""
+  [ -n "$EXIT_CODE" ] && EVENT_JSON="$EVENT_JSON,\"exit_code\":$EXIT_CODE"
+  [ -n "$STDERR_SUMMARY" ] && EVENT_JSON="$EVENT_JSON,\"stderr_summary\":\"$STDERR_SUMMARY\""
+  EVENT_JSON="$EVENT_JSON}"
+  bash "$MCP_CLI" "$PROJECT_DIR" event_log "$EVENT_JSON" 2>/dev/null || true
 fi
 
 # ============================================================
@@ -102,7 +84,7 @@ ${CHANGE_SUMMARY}
 变更文件：
 $(while IFS= read -r line; do echo "- ${line}"; done < "$CHANGES_FILE")
 
-建议执行: \`bash ${CLAUDE_PLUGIN_ROOT}/scripts/backup-claude.sh "变更说明"\`
+建议备份: 下次会话中说"建议备份"即可自动触发
 
 EOF
 
