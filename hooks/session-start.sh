@@ -6,7 +6,7 @@ set -euo pipefail
 
 CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/_common.sh"
-detect_project_dir "$1"
+detect_project_dir "${1:-}"
 
 # 守护: .claude/context/ 下是数据目录
 case "$PROJECT_DIR" in
@@ -232,6 +232,8 @@ fi
 HISTORICAL=$(echo "$SESSION_FILES" | sed -n '2,$p')
 
 # ── 会话统计 (Phase D): SQLite session_stats 优先，.session-index 兜底 ──
+MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
+MCP_HEALTH="${MCP_HEALTH:-unknown}"
 HIST_TOTAL=0; HIST_COMPLETE=0; HIST_SKELETON=0
 
 if [ "$MCP_HEALTH" = "ok" ]; then
@@ -310,7 +312,7 @@ fi
 # ============================================================
 # Phase B: SQLite 集成 — 健康哨兵 + 会话状态 + 简报注入
 # ============================================================
-MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
+# MCP_CLI / MCP_HEALTH 已在会话统计段提前初始化，此处做详细健康检查
 MCP_HEALTH="unknown"
 
 if [ ! -x "$MCP_CLI" ] 2>/dev/null; then
