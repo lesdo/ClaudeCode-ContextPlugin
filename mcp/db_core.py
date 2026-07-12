@@ -47,7 +47,7 @@ def get_db(project_dir: Optional[str] = None):
 
 # Schema initialization
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _migrate_v4(conn: sqlite3.Connection):
@@ -81,6 +81,30 @@ def _migrate_v5(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE patterns ADD COLUMN source TEXT DEFAULT 'manual'")
     if 'extraction_method' not in pat_cols:
         conn.execute("ALTER TABLE patterns ADD COLUMN extraction_method TEXT")
+
+
+def _migrate_v6(conn: sqlite3.Connection):
+    """Idempotent: v6.0 — Opus adversarial review pipeline state.
+    review_pipeline_state: singleton row tracking review signals + history.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS review_pipeline_state (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            session_signals TEXT DEFAULT '{}',
+            last_opus_review_at TEXT,
+            total_opus_reviews INTEGER DEFAULT 0,
+            cooldown_until_session INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    # Seed if empty
+    existing = conn.execute(
+        "SELECT id FROM review_pipeline_state WHERE id = 1"
+    ).fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO review_pipeline_state (id) VALUES (1)"
+        )
 
 
 def init_schema(conn: sqlite3.Connection):
@@ -330,6 +354,9 @@ def init_schema(conn: sqlite3.Connection):
 
     # ── v5.0: orphan recovery (suspect_at) + instinct patterns (source) ──
     _migrate_v5(conn)
+
+    # ── v6.0: Opus adversarial review pipeline state ──
+    _migrate_v6(conn)
 
     # Create stats view
     conn.execute("""

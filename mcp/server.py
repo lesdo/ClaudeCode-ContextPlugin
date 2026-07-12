@@ -37,6 +37,7 @@ from analytics import run_analytics, get_behavior_profile, get_analysis_runs, ru
 from orphan_ops import session_orphan_scan
 from shield import security_scan
 from transcript_ops import enrich_briefing
+from adversarial import opus_review_prep, opus_review_submit, opus_review_state
 
 _PD = os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())
 _RO = ToolAnnotations(readOnlyHint=True)
@@ -277,11 +278,34 @@ async def _session_orphan_scan(auto_abandon: bool = False) -> dict:
 
 # ═══════════ Security scan (v3.2.0 stub) ═══════════
 
-@mcp.tool(name="security_scan", annotations=_RO, title="安全扫描（预留）")
+@mcp.tool(name="security_scan", annotations=_RO, title="安全扫描")
 async def _security_scan(categories: list = None) -> dict:
-    """Planned: AgentShield-style security scan. 102 rules across 5 categories. ETA v3.2.0."""
+    """AgentShield v1.0.0 — 47 rules across 5 categories: secrets(14) + permissions(10) + hooks(11) + mcp(6) + agents(6)."""
     ensure_schema(_PD)
     return security_scan(_PD, categories=categories)
+
+
+# ═══════════ Opus adversarial review tools ═══════════
+
+@mcp.tool(name="opus_review_prep", annotations=_RO, title="审查准备")
+async def _opus_review_prep(base_ref: str = "HEAD~1") -> dict:
+    """Prepare adversarial review context from git diff. Returns review prompt + changed files."""
+    ensure_schema(_PD)
+    return opus_review_prep(_PD, base_ref=base_ref)
+
+
+@mcp.tool(name="opus_review_submit", annotations=_RW, title="审查提交")
+async def _opus_review_submit(findings: list = None, session_id: str = None) -> dict:
+    """Submit adversarial review findings. Stores to decision_audit for outcome_review (ax5)."""
+    ensure_schema(_PD)
+    return opus_review_submit(_PD, findings=findings, session_id=session_id)
+
+
+@mcp.tool(name="opus_review_state", annotations=_RO, title="审查状态")
+async def _opus_review_state() -> dict:
+    """Get current review pipeline state."""
+    ensure_schema(_PD)
+    return opus_review_state(_PD)
 
 
 # ═══════════ CLI path (unchanged — bash hooks) ═══════════
@@ -346,6 +370,9 @@ def cli_main():
         "security_scan": security_scan,
         "session_clear_suspect": session_clear_suspect,
         "enrich_briefing": enrich_briefing,
+        "opus_review_prep": opus_review_prep,
+        "opus_review_submit": opus_review_submit,
+        "opus_review_state": opus_review_state,
     }
 
     try:

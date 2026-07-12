@@ -26,6 +26,15 @@ CP_ERROR_RATE_THRESHOLD="${CP_ERROR_RATE_THRESHOLD:-0.1}" # 错误率阈值（0-
 CP_EVENT_QUERY_LIMIT="${CP_EVENT_QUERY_LIMIT:-200}"      # events 查询上限
 # 任务停滞
 CP_STALE_TASK_DAYS="${CP_STALE_TASK_DAYS:-7}"            # 超过 N 天视为停滞
+# 决策评审 (ax5: outcome_review 自动触发)
+# 理由: 10 会话 ≈ 2-3 个工作日，足够积累足够的决策样本（decay/crash/dedup 每会话可能产生 2-5 条决策）且不超过
+# decision_audit 表膨胀速度。min_age=7 天保证决策有足够时间产生"实际后果"（如被 decay 的记忆是否被重新访问）
+CP_REVIEW_INTERVAL="${CP_REVIEW_INTERVAL:-10}"           # 每 N 次会话触发一次 outcome_review
+CP_REVIEW_MIN_AGE="${CP_REVIEW_MIN_AGE:-7}"              # 只审查 ≥ N 天前的决策
+# Opus 对抗式审查 (ax10: Red/Blue/Auditor 调度)
+# 理由: 20 会话 ≈ 1-2 周，积累的 diff 通常覆盖 1-3 个特性。低于 20 则 diff 太小（常为单次编辑），
+# 高于 30 则 diff 太大（token 超预算）。配合 _MIN_CHANGED_FILES=3 做二次门控
+CP_OPUS_INTERVAL="${CP_OPUS_INTERVAL:-20}"             # 每 N 次会话触发一次审查上下文准备
 # 健康检查
 CP_CLAUDE_MD_LINE_LIMIT="${CP_CLAUDE_MD_LINE_LIMIT:-50}" # CLAUDE.md 行数上限
 CP_COMPLEXITY_LINE_LIMIT="${CP_COMPLEXITY_LINE_LIMIT:-150}" # 单文件行数热点阈值
