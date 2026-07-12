@@ -20,23 +20,23 @@ assert_contains "命名空间" <(echo "$OUTPUT") "命名空间"
 
 # ── 2. 创建 project.md 后 ──
 echo "--- 已有项目 ---"
-mkdir -p "$TEST_DIR/.claude/context/sessions"
+mkdir -p "$TEST_DIR/.context/sessions"
 echo "# test" > "$TEST_DIR/.claude/context/project.md"
 OUTPUT=$(bash "$PLUGIN/hooks/session-start.sh" "$TEST_DIR" 2>&1 || true)
 assert_contains "项目上下文" <(echo "$OUTPUT") "项目上下文"
 
-# ── 3. 有多个会话时（历史会话出现）──
+# ── 3. 有历史会话时（MCP 不可用时的 fallback）──
 echo "--- 有历史会话 ---"
-cat > "$TEST_DIR/.claude/context/sessions/2026-01-01_120000.md" << 'EOF'
+cat > "$TEST_DIR/.context/sessions/2026-01-01_120000.md" << 'EOF'
 # 2026-01-01_120000
 **摘要**: 旧会话
 EOF
-cat > "$TEST_DIR/.claude/context/sessions/2026-01-02_130000.md" << 'EOF'
+cat > "$TEST_DIR/.context/sessions/2026-01-02_130000.md" << 'EOF'
 # 2026-01-02_130000
 **摘要**: 较新会话
 EOF
 OUTPUT=$(bash "$PLUGIN/hooks/session-start.sh" "$TEST_DIR" 2>&1 || true)
-assert_contains "当前会话" <(echo "$OUTPUT") "当前会话"
+assert_contains "会话记录" <(echo "$OUTPUT") "会话记录状态"
 
 # ── 4. .crash 残留检测 ──
 echo "--- crash 检测 ---"

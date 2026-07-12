@@ -33,12 +33,16 @@ done <<< "$PYTHON_EXTRACT"
 # ============================================================
 MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
 
-if [ -x "$MCP_CLI" ] 2>/dev/null; then
+MCP_HEALTH=$(mcp_health_check "$PROJECT_DIR" "$MCP_CLI")
+if [ "$MCP_HEALTH" = "ok" ]; then
   EVENT_JSON="{\"tool_name\":\"$TOOL_NAME\",\"tool_input_summary\":\"$SUMMARY\",\"file_path\":\"${FILE_PATH:-}\""
   [ -n "$EXIT_CODE" ] && EVENT_JSON="$EVENT_JSON,\"exit_code\":$EXIT_CODE"
   [ -n "$STDERR_SUMMARY" ] && EVENT_JSON="$EVENT_JSON,\"stderr_summary\":\"$STDERR_SUMMARY\""
   EVENT_JSON="$EVENT_JSON}"
-  bash "$MCP_CLI" "$PROJECT_DIR" event_log "$EVENT_JSON" 2>/dev/null || true
+  bash "$MCP_CLI" "$PROJECT_DIR" event_log "$EVENT_JSON" 2>/dev/null || echo "post-tool: event_log 失败 (tool=$TOOL_NAME)" >&2
+
+  # ax10 reversal: new event → session is alive → clear suspect marker
+  bash "$MCP_CLI" "$PROJECT_DIR" session_clear_suspect 2>/dev/null || true
 fi
 
 # ============================================================

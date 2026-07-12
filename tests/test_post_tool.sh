@@ -68,6 +68,38 @@ else
   fail "空输入: 非零退出"
 fi
 
+# ── 测试 5: session_clear_suspect (ax10 逆转机制) ──
+echo "--- session_clear_suspect ---"
+# 设 suspect_at → 调用 clear → 验证已清除
+python3 - "$TEST_DIR" "$PLUGIN" << 'PYEOF'
+import sys, os
+td = sys.argv[1]
+plugin = sys.argv[2]
+sys.path.insert(0, os.path.join(plugin, 'mcp'))
+from db_core import get_db, ensure_schema
+ensure_schema(td)
+with get_db(td) as conn:
+    row = conn.execute("SELECT id FROM sessions WHERE status='active' ORDER BY created_at DESC LIMIT 1").fetchone()
+    if row:
+        conn.execute("UPDATE sessions SET suspect_at=datetime('now') WHERE id=?", (row[0],))
+PYEOF
+
+CLEAR_RESULT=$(bash "$MCP" "$TEST_DIR" session_clear_suspect 2>/dev/null || echo '{"status":"error"}')
+assert_contains "clear_suspect 返回 cleared" <(echo "$CLEAR_RESULT") "cleared"
+
+VERIFY=$(python3 - "$TEST_DIR" "$PLUGIN" << 'PYEOF'
+import sys, os, json
+td = sys.argv[1]
+plugin = sys.argv[2]
+sys.path.insert(0, os.path.join(plugin, 'mcp'))
+from db_core import get_db
+with get_db(td) as conn:
+    row = conn.execute("SELECT suspect_at FROM sessions WHERE status='active' ORDER BY created_at DESC LIMIT 1").fetchone()
+    print(json.dumps({"suspect_at": row['suspect_at'] if row else "no_row"}))
+PYEOF
+)
+assert_contains "suspect_at 已清除为 null" <(echo "$VERIFY") "null"
+
 # ── 清理 ──
 rm -rf "$TEST_DIR"
 

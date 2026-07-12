@@ -33,7 +33,7 @@ CURRENT_COUNT="${CURRENT_COUNT:-0}"
 [ "$CURRENT_COUNT" -eq 0 ] 2>/dev/null && exit 0
 
 # ── 检查触发阈值 ─────────────────────────────────
-TRIGGER_INTERVAL=3  # Phase 1: 每 3 会话
+TRIGGER_INTERVAL="${CP_ANALYSIS_INTERVAL:-3}"  # Phase 1: 每 N 会话（默认3）
 
 if [ -f "$STATE_FILE" ]; then
   LAST_COUNT=$(head -1 "$STATE_FILE" 2>/dev/null || echo "0")
@@ -52,7 +52,8 @@ fi
 # ── 触发分析 ─────────────────────────────────────
 START_TS=$(date +%s%3N 2>/dev/null || echo "0")
 
-if [ -x "$MCP_CLI" ] 2>/dev/null; then
+MCP_HEALTH=$(mcp_health_check "$PROJECT_DIR" "$MCP_CLI")
+if [ "$MCP_HEALTH" = "ok" ]; then
   RESULT=$(bash "$MCP_CLI" "$PROJECT_DIR" run_analytics "{}" 2>/dev/null || echo '{"error":"mcp_cli failed"}')
 else
   exit 0

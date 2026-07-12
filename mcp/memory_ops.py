@@ -5,6 +5,7 @@ Depends on db_core.py for connection management and vectors.py for hybrid search
 """
 
 import json
+import os
 import time
 from typing import Optional, Any
 from datetime import datetime, timezone, timedelta
@@ -13,6 +14,113 @@ from db_core import (
     get_db, ensure_schema, get_db_path, new_id, now_iso,
     make_fingerprint, jaccard_similarity
 )
+
+# ── Memory relations (graph) ──
+
+def memory_relation_create(project_dir: Optional[str] = None,
+                           source_id: str = "",
+                           target_id: str = "",
+                           relation_type: str = "relates_to",
+                           weight: float = 1.0) -> dict:
+    """Create a typed relation between two memories."""
+    rel_id = new_id()
+    with get_db(project_dir) as conn:
+        try:
+            conn.execute("""
+                INSERT INTO memory_relations (id, source_id, target_id, relation_type, weight)
+                VALUES (?,?,?,?,?)
+            """, (rel_id, source_id, target_id, relation_type, weight))
+        except Exception as e:
+            return {"status": "error", "reason": str(e)[:200]}
+    return {"id": rel_id, "status": "created"}
+
+def memory_relations_get(project_dir: Optional[str] = None,
+                         mem_id: str = "",
+                         direction: str = "both",
+                         max_depth: int = 2) -> list:
+    """Get related memories via BFS graph traversal up to max_depth."""
+    with get_db(project_dir) as conn:
+        visited = set()
+        result = []
+        frontier = [(mem_id, 0)]
+
+        while frontier:
+            current, depth = frontier.pop(0)
+            if current in visited or depth > max_depth:
+                continue
+            visited.add(current)
+
+            if current != mem_id:
+                mem = conn.execute("SELECT * FROM memories WHERE id=?", (current,)).fetchone()
+                if mem:
+                    result.append(dict(mem) | {"_depth": depth})
+
+            if depth < max_depth:
+                if direction in ('out', 'both'):
+                    edges = conn.execute(
+                        "SELECT target_id FROM memory_relations WHERE source_id=?",
+                        (current,)
+                    ).fetchall()
+                    for e in edges:
+                        if e[0] not in visited:
+                            frontier.append((e[0], depth + 1))
+
+                if direction in ('in', 'both'):
+                    edges = conn.execute(
+                        "SELECT source_id FROM memory_relations WHERE target_id=?",
+                        (current,)
+                    ).fetchall()
+                    for e in edges:
+                        if e[0] not in visited:
+                            frontier.append((e[0], depth + 1))
+
+    return result
+
+def memory_graph_get(project_dir: Optional[str] = None,
+                     mem_id: str = "",
+                     max_depth: int = 3) -> dict:
+    """Get the full graph around a memory (nodes + edges)."""
+    with get_db(project_dir) as conn:
+        visited = set()
+        node_ids = set()
+        edges = []
+        frontier = [(mem_id, 0)]
+
+        while frontier:
+            current, depth = frontier.pop(0)
+            if current in visited or depth > max_depth:
+                continue
+            visited.add(current)
+            node_ids.add(current)
+
+            if depth < max_depth:
+                for row in conn.execute(
+                    "SELECT * FROM memory_relations WHERE source_id=? OR target_id=?",
+                    (current, current)
+                ).fetchall():
+                    edges.append(dict(row))
+                    if row['source_id'] not in visited:
+                        frontier.append((row['source_id'], depth + 1))
+                    if row['target_id'] not in visited:
+                        frontier.append((row['target_id'], depth + 1))
+
+        nodes = []
+        for nid in node_ids:
+            mem = conn.execute("SELECT id, type, content, confidence FROM memories WHERE id=?", (nid,)).fetchone()
+            if mem:
+                nodes.append(dict(mem))
+
+    return {"nodes": nodes, "edges": edges, "center": mem_id}
+
+# ax4: Jaccard thresholds configurable via env vars
+def _jaccard_near_dup():
+    return float(os.environ.get('CP_JACCARD_NEAR_DUP', '0.85'))
+
+def _jaccard_supersede():
+    return float(os.environ.get('CP_JACCARD_SUPERSEDE', '0.95'))
+
+def _jaccard_window():
+    return int(os.environ.get('CP_JACCARD_WINDOW', '10'))
 
 # Memory operations
 
@@ -51,19 +159,22 @@ def memory_store(project_dir: Optional[str] = None,
                 return {"id": existing['id'], "status": "deduped_exact",
                         "hit_count": existing['hit_count'] + 1}
 
-            # Jaccard similarity check against last 10 of same type
+            # Jaccard similarity check against recent memories of same type
+            window = _jaccard_window()
+            near_dup = _jaccard_near_dup()
+            supersede = _jaccard_supersede()
             recent = conn.execute(
-                "SELECT id, content FROM memories WHERE type=? ORDER BY created_at DESC LIMIT 10",
-                (mem_type,)
+                "SELECT id, content FROM memories WHERE type=? ORDER BY created_at DESC LIMIT ?",
+                (mem_type, window)
             ).fetchall()
             for r in recent:
                 sim = jaccard_similarity(content, r['content'])
-                if sim > 0.85:
+                if sim > near_dup:
                     conn.execute("""
                         INSERT INTO dedup_log (action, original_id, new_id, similarity, reason)
-                        VALUES ('near_duplicate', ?, ?, ?, 'jaccard > 0.85')
-                    """, (r['id'], mem_id, sim))
-                    if sim > 0.95:
+                        VALUES ('near_duplicate', ?, ?, ?, ?)
+                    """, (r['id'], mem_id, sim, f'jaccard > {near_dup}'))
+                    if sim > supersede:
                         # Supersede old
                         conn.execute(
                             "UPDATE memories SET supersedes=?, updated_at=? WHERE id=?",
@@ -79,13 +190,16 @@ def memory_store(project_dir: Optional[str] = None,
         """, (mem_id, mem_type, content, session_id, confidence, importance,
               tags_json, meta_json, fp, now))
 
-        # Auto-index into vector store
+        # Auto-index into vector store (best-effort, log failures)
         memory_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         try:
             from vectors import index_memory
             index_memory(conn, memory_rowid, content, get_db_path(project_dir))
-        except Exception:
-            pass  # Vector indexing is best-effort
+        except Exception as e:
+            conn.execute("""
+                INSERT INTO maintenance_log (operation, items_affected, details)
+                VALUES ('vector_index_error', 1, ?)
+            """, (json.dumps({'mem_id': mem_id, 'error': str(e)}),))
 
     return {"id": mem_id, "status": "stored"}
 

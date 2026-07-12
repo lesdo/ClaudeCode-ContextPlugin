@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
-"""
-Session / Event / Stats / Briefing / Maintenance operations.
-Depends on db_core.py for connection management.
-"""
+"""Session CRUD, Event log, Stats, Briefing, Compile."""
 
 import json
-import time
-from typing import Optional, Any
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 
-from db_core import (
-    get_db, ensure_schema, get_db_path, new_id, now_iso,
-    make_fingerprint, jaccard_similarity
-)
+from db_core import get_db, now_iso, new_id
 
 # Session operations
 
@@ -75,7 +68,7 @@ def session_finalize(project_dir: Optional[str] = None,
                 end_dt = datetime.fromisoformat(now)
                 duration_min = int((end_dt - start_dt).total_seconds() / 60)
             except Exception:
-                pass
+                duration_min = None  # ax6: non-critical, log would be noisy
 
         conn.execute("""
             UPDATE sessions SET
@@ -132,38 +125,46 @@ def session_mark_abandoned(project_dir: Optional[str] = None,
                            exclude_id: Optional[str] = None):
     """Mark CRASHED sessions as abandoned. Only acts when there are 2+ active sessions
     (the newest is the current session, older ones are crash residues).
+    ax2: Multi-dimensional — adds time dimension. Sessions younger than min_age_minutes
+    are likely parallel sessions, not crash residues.
     Returns the number of rows affected."""
+    import os
+    min_age_min = int(os.environ.get('CP_ABANDONED_MIN_AGE', '30'))  # ax4: configurable
+
     with get_db(project_dir) as conn:
         if session_id:
             cur = conn.execute("UPDATE sessions SET abandoned=1, status='skeleton' WHERE id=?", (session_id,))
             return {"rowcount": cur.rowcount}
 
-        # Count active sessions
+        # Count active sessions older than min_age (ignore just-started parallel sessions)
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=min_age_min)).isoformat()
         active_count = conn.execute(
-            "SELECT count(*) FROM sessions WHERE status='active' AND abandoned=0"
+            "SELECT count(*) FROM sessions WHERE status='active' AND abandoned=0 AND created_at < ?",
+            (cutoff,)
         ).fetchone()[0]
 
-        # If only 1 active session, it's the current one — don't touch it
+        # If only 1 old active session, it's the current one — don't touch it
         if active_count <= 1:
-            return {"rowcount": 0, "active_count": active_count}
+            total_active = conn.execute(
+                "SELECT count(*) FROM sessions WHERE status='active' AND abandoned=0"
+            ).fetchone()[0]
+            return {"rowcount": 0, "active_count": total_active,
+                    "skipped": total_active - active_count, "reason": "min_age" if total_active > active_count else "single"}
 
-        # 2+ active = crash residues. Keep the newest (current), mark others.
+        # 2+ old active = crash residues. Keep the newest (current), mark others that are old enough.
         newest = conn.execute(
-            "SELECT id FROM sessions WHERE status='active' AND abandoned=0 ORDER BY created_at DESC LIMIT 1"
+            "SELECT id FROM sessions WHERE status='active' AND abandoned=0 AND created_at < ? ORDER BY created_at DESC LIMIT 1",
+            (cutoff,)
         ).fetchone()
-        if newest and exclude_id:
+        target_id = exclude_id if exclude_id else (newest[0] if newest else None)
+        if target_id:
             cur = conn.execute(
-                "UPDATE sessions SET abandoned=1, status='skeleton' WHERE status='active' AND abandoned=0 AND id != ?",
-                (exclude_id,)
-            )
-        elif newest:
-            cur = conn.execute(
-                "UPDATE sessions SET abandoned=1, status='skeleton' WHERE status='active' AND abandoned=0 AND id != ?",
-                (newest[0],)
+                "UPDATE sessions SET abandoned=1, status='skeleton' WHERE status='active' AND abandoned=0 AND id != ? AND created_at < ?",
+                (target_id, cutoff)
             )
         else:
             return {"rowcount": 0}
-        return {"rowcount": cur.rowcount}
+        return {"rowcount": cur.rowcount, "min_age_minutes": min_age_min}
 
 def session_events(project_dir: Optional[str] = None,
                    session_id: Optional[str] = None,
@@ -328,6 +329,8 @@ def event_log(project_dir: Optional[str] = None,
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (session_id, now, tool_name, tool_input_summary, file_path,
               exit_code, stderr_summary, duration_ms))
+    return {"status": "logged", "tool": tool_name}
+
 def stats_overview(project_dir: Optional[str] = None) -> dict:
     with get_db(project_dir) as conn:
         row = conn.execute("SELECT * FROM stats_overview").fetchone()
@@ -366,7 +369,40 @@ def session_find_status(project_dir: Optional[str] = None,
             return "skeleton"
         return "unknown"
 
+
+# ── ax10 reversal: PostTool suspect clearing ──
+
+def session_clear_suspect(project_dir: Optional[str] = None,
+                           session_id: Optional[str] = None) -> dict:
+    """Clear suspect_at marker when new events prove session is alive.
+    ax10 reversal: a session receiving new tool events is not an orphan.
+    Called by post-tool.sh after every successful event_log.
+    Best-effort — failure must not block event logging (ax6: fail-safe)."""
+    with get_db(project_dir) as conn:
+        if session_id is None:
+            row = conn.execute(
+                "SELECT id FROM sessions WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            session_id = row['id'] if row else None
+        if session_id is None:
+            return {"status": "no_active_session"}
+        cur = conn.execute(
+            "SELECT suspect_at FROM sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        if cur and cur['suspect_at'] is not None:
+            conn.execute(
+                "UPDATE sessions SET suspect_at=NULL WHERE id=?", (session_id,)
+            )
+            return {"status": "cleared", "session_id": session_id, "was_suspect": cur['suspect_at']}
+        return {"status": "not_suspect", "session_id": session_id}
+
+
 # Briefing operations
+
+# TODO(v3.2): transcript.jsonl parsing for richer session summaries
+# Claude provides transcript_path in Stop hook stdin JSON.
+# ECC pattern: parse last 10 user messages + tools used + files modified.
+# Our advantage: events table already structured — transcript adds semantic layer.
 
 def briefing_generate(project_dir: Optional[str] = None,
                       max_tokens: int = 500) -> str:
@@ -437,180 +473,3 @@ def briefing_get(project_dir: Optional[str] = None) -> Optional[str]:
         row = conn.execute("SELECT content FROM briefing_cache ORDER BY generated_at DESC LIMIT 1").fetchone()
         return row['content'] if row else None
 
-# Memory relations (graph)
-
-def memory_relation_create(project_dir: Optional[str] = None,
-                           source_id: str = "",
-                           target_id: str = "",
-                           relation_type: str = "relates_to",
-                           weight: float = 1.0) -> dict:
-    """Create a typed relation between two memories."""
-    rel_id = new_id()
-    with get_db(project_dir) as conn:
-        try:
-            conn.execute("""
-                INSERT INTO memory_relations (id, source_id, target_id, relation_type, weight)
-                VALUES (?,?,?,?,?)
-            """, (rel_id, source_id, target_id, relation_type, weight))
-        except Exception:
-            return {"status": "duplicate", "source_id": source_id, "target_id": target_id}
-    return {"id": rel_id, "status": "created"}
-
-def memory_relations_get(project_dir: Optional[str] = None,
-                         mem_id: str = "",
-                         direction: str = "both",
-                         max_depth: int = 2) -> list:
-    """Get related memories via BFS graph traversal up to max_depth.
-    direction: 'out' (source), 'in' (target), 'both'"""
-    with get_db(project_dir) as conn:
-        visited = set()
-        result = []
-        frontier = [(mem_id, 0)]
-
-        while frontier:
-            current, depth = frontier.pop(0)
-            if current in visited or depth > max_depth:
-                continue
-            visited.add(current)
-
-            if current != mem_id:  # Skip the origin node
-                mem = conn.execute("SELECT * FROM memories WHERE id=?", (current,)).fetchone()
-                if mem:
-                    result.append(dict(mem) | {"_depth": depth})
-
-            if depth < max_depth:
-                if direction in ('out', 'both'):
-                    edges = conn.execute(
-                        "SELECT target_id FROM memory_relations WHERE source_id=?",
-                        (current,)
-                    ).fetchall()
-                    for e in edges:
-                        if e[0] not in visited:
-                            frontier.append((e[0], depth + 1))
-
-                if direction in ('in', 'both'):
-                    edges = conn.execute(
-                        "SELECT source_id FROM memory_relations WHERE target_id=?",
-                        (current,)
-                    ).fetchall()
-                    for e in edges:
-                        if e[0] not in visited:
-                            frontier.append((e[0], depth + 1))
-
-    return result
-
-def memory_graph_get(project_dir: Optional[str] = None,
-                     mem_id: str = "",
-                     max_depth: int = 3) -> dict:
-    """Get the full graph around a memory (nodes + edges)."""
-    with get_db(project_dir) as conn:
-        # Collect all related nodes via BFS
-        visited = set()
-        node_ids = set()
-        edges = []
-        frontier = [(mem_id, 0)]
-
-        while frontier:
-            current, depth = frontier.pop(0)
-            if current in visited or depth > max_depth:
-                continue
-            visited.add(current)
-            node_ids.add(current)
-
-            if depth < max_depth:
-                for row in conn.execute(
-                    "SELECT * FROM memory_relations WHERE source_id=? OR target_id=?",
-                    (current, current)
-                ).fetchall():
-                    edges.append(dict(row))
-                    if row['source_id'] not in visited:
-                        frontier.append((row['source_id'], depth + 1))
-                    if row['target_id'] not in visited:
-                        frontier.append((row['target_id'], depth + 1))
-
-        # Fetch node details
-        nodes = []
-        for nid in node_ids:
-            mem = conn.execute("SELECT id, type, content, confidence FROM memories WHERE id=?", (nid,)).fetchone()
-            if mem:
-                nodes.append(dict(mem))
-
-    return {"nodes": nodes, "edges": edges, "center": mem_id}
-
-# Maintenance operations
-
-DECAY_CONFIG = {
-    'pattern': None,
-    'decision': None,
-    'preference': None,
-    'semantic': 30,
-    'procedural': 60,
-    'episodic': 7,
-}
-
-def decay_run(project_dir: Optional[str] = None) -> dict:
-    """Run type-aware decay on memories."""
-    now = datetime.now(timezone.utc)
-    results = {'archived': 0, 'deleted': 0}
-    with get_db(project_dir) as conn:
-        for mem_type, ttl_days in DECAY_CONFIG.items():
-            if ttl_days is None:
-                continue
-            cutoff = (now - timedelta(days=ttl_days)).isoformat()
-            # Archive: still searchable but not in briefing
-            archived = conn.execute("""
-                UPDATE memories SET expires_at=?
-                WHERE type=? AND expires_at IS NULL AND updated_at <?
-            """, (now.isoformat(), mem_type, cutoff)).rowcount
-            results['archived'] += archived
-
-            # Delete expired beyond twice the TTL
-            deep_cutoff = (now - timedelta(days=ttl_days * 3)).isoformat()
-            deleted = conn.execute("""
-                DELETE FROM memories
-                WHERE type=? AND expires_at IS NOT NULL AND expires_at <?
-            """, (mem_type, deep_cutoff)).rowcount
-            results['deleted'] += deleted
-
-        conn.execute("""
-            INSERT INTO maintenance_log (operation, items_affected, details)
-            VALUES ('decay_run', ?, ?)
-        """, (results['archived'] + results['deleted'], json.dumps(results)))
-    return results
-
-def dedup_run(project_dir: Optional[str] = None, dry_run: bool = False) -> list:
-    """Run batch dedup on memories."""
-    findings = []
-    with get_db(project_dir) as conn:
-        # Get all same-type memory groups with >1 entry
-        groups = conn.execute("""
-            SELECT type, count(*) as cnt FROM memories
-            WHERE type IN ('semantic', 'episodic', 'procedural')
-            GROUP BY type HAVING cnt > 1
-        """).fetchall()
-        for g in groups:
-            rows = conn.execute(
-                "SELECT id, content FROM memories WHERE type=? ORDER BY created_at",
-                (g['type'],)
-            ).fetchall()
-            for i in range(len(rows)):
-                for j in range(i + 1, len(rows)):
-                    sim = jaccard_similarity(rows[i]['content'], rows[j]['content'])
-                    if sim > 0.85:
-                        findings.append({
-                            'type': g['type'],
-                            'id_a': rows[i]['id'],
-                            'id_b': rows[j]['id'],
-                            'similarity': round(sim, 3),
-                        })
-                        if not dry_run and sim > 0.95:
-                            conn.execute(
-                                "UPDATE memories SET supersedes=?, updated_at=? WHERE id=?",
-                                (rows[i]['id'], now_iso(), rows[j]['id'])
-                            )
-        if not dry_run:
-            conn.execute("""
-                INSERT INTO maintenance_log (operation, items_affected, details)
-                VALUES ('dedup_run', ?, ?)
-            """, (len(findings), json.dumps(findings)))
-    return findings

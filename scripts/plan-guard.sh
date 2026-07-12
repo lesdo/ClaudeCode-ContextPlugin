@@ -45,7 +45,8 @@ if os.path.exists(idx_path):
         pass
 
 now = datetime.now(timezone.utc)
-cutoff = (now - timedelta(days=7)).isoformat()
+stale_days = int(os.environ.get('CP_STALE_TASK_DAYS', '7'))
+cutoff = (now - timedelta(days=stale_days)).isoformat()
 
 rows = conn.execute(
     \"SELECT task_id, subject, status FROM task_states\"

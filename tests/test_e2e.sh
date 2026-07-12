@@ -63,7 +63,7 @@ assert_eq "事件数" "8" "$EC"
 
 # ── 4. crash_diagnose ──
 echo "--- 4. 诊断 ---"
-read DC DS <<< $(crash_diagnose "$SLUG" "$TEST_DIR" "skeleton")
+read DC DS DFLAGS <<< $(crash_diagnose "$SLUG" "$TEST_DIR" "skeleton")
 assert_eq "诊断" "8 L2" "$DC $DS"
 
 # ── 5. 会话统计 ──
@@ -96,6 +96,63 @@ assert_contains "编译: 摘要" "$TEST_DIR/.claude/context/sessions/${SLUG}.md"
 # ── 8. 全量统计 ──
 echo "--- 8. stats_overview ---"
 bash "$MCP" "$TEST_DIR" stats_overview 2>/dev/null >/dev/null && pass "stats" || fail "stats"
+
+# ── 9. 遗孤扫描 (v5.0: 3D weighted scoring) ──
+echo "--- 9. 遗孤扫描 ---"
+ORPHAN_DIR=$(mktemp -d)
+mkdir -p "$ORPHAN_DIR/.claude/context/sessions"
+bash "$MCP" "$ORPHAN_DIR" ensure_schema 2>/dev/null >/dev/null
+
+source "$SCRIPT_DIR/_orphan_setup.sh"
+setup_orphan_sessions "$ORPHAN_DIR" "$MCP"
+
+OSCAN=$(bash "$MCP" "$ORPHAN_DIR" session_orphan_scan '{"auto_abandon":false}' 2>/dev/null)
+OSCANNED=$(echo "$OSCAN" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scanned',0))" 2>/dev/null)
+assert_ge "遗孤扫描: scanned >= 2" "2" "${OSCANNED:-0}"
+
+OREC_SUSPECT=$(echo "$OSCAN" | python3 -c "
+import sys,json
+print(len([s for s in json.load(sys.stdin).get('sessions',[]) if s.get('recommendation')=='suspect']))
+" 2>/dev/null)
+assert_ge "遗孤扫描: suspect >= 1" "1" "${OREC_SUSPECT:-0}"
+
+OREC_KEEP=$(echo "$OSCAN" | python3 -c "
+import sys,json
+# 平行会话有事件+alive PID, 分数应低于孤儿 (但 Windows os.kill 不可靠, 不严格断言 rec)
+sessions = json.load(sys.stdin).get('sessions',[])
+parallel = [s for s in sessions if s.get('slug')=='2026-06-03_120000']
+orphans = [s for s in sessions if s.get('slug') != '2026-06-03_120000']
+if parallel and orphans:
+    ps = parallel[0]['orphan_score']
+    os_min = min(o['orphan_score'] for o in orphans)
+    ok = ps < os_min and parallel[0]['event_count'] > 0
+    print('1' if ok else '0')
+else:
+    print('0')
+" 2>/dev/null)
+assert_eq "遗孤扫描: 平行会话分数低于孤儿且有事件" "1" "${OREC_KEEP:-0}"
+
+OERR=$(echo "$OSCAN" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('errors',[])))" 2>/dev/null)
+assert_eq "遗孤扫描: errors" "0" "${OERR:-99}"
+
+rm -rf "$ORPHAN_DIR"
+pass "遗孤扫描: 3D 加权验证通过"
+
+# ── 10. 安全扫描 (v0.2.0: secrets 14 rules) ──
+echo "--- 10. 安全扫描 ---"
+SHIELD_DIR=$(mktemp -d)
+# 注一个假 secret 文件
+echo 'export GITHUB_TOKEN="ghp_abcdefghijklmnopqrstuvwxyz1234567890"' > "$SHIELD_DIR/config.sh"
+SSCAN=$(bash "$MCP" "$SHIELD_DIR" security_scan 2>/dev/null)
+SFOUND=$(echo "$SSCAN" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scan_summary',{}).get('total_findings',0))" 2>/dev/null)
+assert_ge "安全扫描: 检测假 secret" "1" "${SFOUND:-0}"
+
+SSEV=$(echo "$SSCAN" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scan_summary',{}).get('by_severity',{}).get('critical',0))" 2>/dev/null)
+assert_ge "安全扫描: 关键级别 >= 1" "1" "${SSEV:-0}"
+
+SIMPL=$(echo "$SSCAN" | python3 -c "import sys,json; print(json.load(sys.stdin).get('implemented_rules',0))" 2>/dev/null)
+assert_eq "安全扫描: implemented_rules=14" "14" "${SIMPL:-0}"
+rm -rf "$SHIELD_DIR"
 
 rm -rf "$TEST_DIR"
 finish

@@ -1,0 +1,1 @@
+{"status":"invalid","reasons":["UNSUPPORTED_LANGUAGE","TOO_FEW_FILES","LOW_COVERAGE"],"confidence":"low","totalFilesAnalyzed":0,"totalMeaningfulFiles":10,"coverageRatio":0,"primaryLanguage":"Python","detectedLanguages":{"Python":10}}

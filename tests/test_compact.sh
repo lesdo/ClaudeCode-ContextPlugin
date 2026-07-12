@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/assert.sh"
 echo "=== Unit: compact hooks ==="
 
 TEST_DIR=$(mktemp -d)
-mkdir -p "$TEST_DIR/.claude/context/briefing"
+mkdir -p "$TEST_DIR/.context/briefing"
 export CLAUDE_PLUGIN_ROOT="$PLUGIN"
 source "$PLUGIN/hooks/lib/_common.sh"
 
@@ -19,7 +19,7 @@ MCP="$PLUGIN/scripts/mcp-cli.sh"
 echo "--- pre-compact ---"
 bash "$MCP" "$TEST_DIR" session_create '{"slug":"test","date":"2026-07-04","time_val":"120000"}' 2>/dev/null >/dev/null
 OUTPUT=$(bash "$PLUGIN/hooks/pre-compact.sh" "$TEST_DIR" 2>&1 || true)
-BRIEFING_FILE="$TEST_DIR/.claude/context/briefing/active.md"
+BRIEFING_FILE="$TEST_DIR/.context/briefing/active.md"
 if [ -f "$BRIEFING_FILE" ] && [ -s "$BRIEFING_FILE" ]; then
   pass "简报落盘: $(wc -c < "$BRIEFING_FILE") bytes"
 else

@@ -24,8 +24,14 @@ else
 fi
 
 # 2. DB 补充（可能有 compaction 期间新写入的数据）
-if [ -x "$MCP_CLI" ] 2>/dev/null; then
-  DB_BRIEFING=$(bash "$MCP_CLI" "$PROJECT_DIR" briefing_get 2>/dev/null || echo "")
+MCP_HEALTH=$(mcp_health_check "$PROJECT_DIR" "$MCP_CLI")
+if [ "$MCP_HEALTH" = "ok" ]; then
+  DB_BRIEFING=$(bash "$MCP_CLI" "$PROJECT_DIR" briefing_get 2>/dev/null)
+  BRIEF_EXIT=$?
+  if [ $BRIEF_EXIT -ne 0 ]; then
+    echo "post-compact: DB 简报查询失败 (exit=$BRIEF_EXIT)"
+    DB_BRIEFING=""
+  fi
   if [ -n "$DB_BRIEFING" ] && [ "$DB_BRIEFING" != "null" ]; then
     # 仅当 DB 简报与文件简报不同时才输出
     if [ ! -f "$BRIEFING_FILE" ] || ! diff -q <(echo "$DB_BRIEFING") "$BRIEFING_FILE" >/dev/null 2>&1; then

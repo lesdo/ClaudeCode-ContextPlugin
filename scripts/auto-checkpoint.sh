@@ -99,7 +99,8 @@ if [[ ! -f "$ACTIVITY_FILE" ]]; then
   echo "" >> "$ACTIVITY_FILE"
 fi
 
-# Insert new entry after header, trim to 20 entries
-{ head -2 "$ACTIVITY_FILE"; echo "$ACTIVITY_LINE"; tail -n +3 "$ACTIVITY_FILE" | head -19; } > "$ACTIVITY_FILE.tmp" && mv "$ACTIVITY_FILE.tmp" "$ACTIVITY_FILE"
+# Insert new entry after header, trim to N entries (configurable, default 19 + 2 header)
+MAX_ENTRIES="${CP_ACTIVITY_MAX_ENTRIES:-19}"
+{ head -2 "$ACTIVITY_FILE"; echo "$ACTIVITY_LINE"; tail -n +3 "$ACTIVITY_FILE" | head -"$MAX_ENTRIES"; } > "$ACTIVITY_FILE.tmp" && mv "$ACTIVITY_FILE.tmp" "$ACTIVITY_FILE"
 
 exit 0

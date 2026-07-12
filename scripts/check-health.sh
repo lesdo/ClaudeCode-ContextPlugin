@@ -136,11 +136,11 @@ check "STATUS.md 存在"  test -f "$PROJECT_DIR/.claude/context/STATUS.md"
 echo ""
 echo "── CLAUDE.md 底线"
 LINES=$(wc -l < "$HOME/.claude/CLAUDE.md")
-if [ "$LINES" -le 50 ]; then
-  echo "  ✓ CLAUDE.md 行数: $LINES ≤ 50"
+if [ "$LINES" -le "${CP_CLAUDE_MD_LINE_LIMIT:-50}" ]; then
+  echo "  ✓ CLAUDE.md 行数: $LINES ≤ ${CP_CLAUDE_MD_LINE_LIMIT:-50}"
   PASS=$((PASS + 1))
 else
-  echo "  ✗ CLAUDE.md 行数: $LINES > 50"
+  echo "  ✗ CLAUDE.md 行数: $LINES > ${CP_CLAUDE_MD_LINE_LIMIT:-50}"
   FAIL=$((FAIL + 1))
 fi
 

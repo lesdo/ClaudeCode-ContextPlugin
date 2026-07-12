@@ -174,165 +174,59 @@ else
 fi
 
 # ============================================================
-# 会话记录状态
+# 会话记录状态（精简版 — 不暴露文件系统路径，SQLite 为唯一源）
 # ============================================================
-echo "=== 会话记录状态 ==="
 
 SESSIONS_DIR="$CONTEXT_DIR/sessions"
 
 if [ ! -d "$SESSIONS_DIR" ]; then
+  echo "=== 会话记录状态 ==="
   echo "状态: 无会话目录（首次运行？）"
+  echo "（SQLite 管线将在下方初始化）"
   echo ""
-  echo "=== 会话管理规则 ==="
-  echo "首次进入项目，.context/ 和 .claude/context/ 目录将在首次会话后自动创建。"
-  exit 0
 fi
 
-# 匹配会话文件格式 YYYY-MM-DD_HHMM.md 或 YYYY-MM-DD_HHMMSS.md
-SESSION_FILES=$(ls -1 "$SESSIONS_DIR"/*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4,6}\.md$' | sort -r)
-
-if [ -z "$SESSION_FILES" ]; then
-  echo "状态: 无历史会话记录"
-  echo ""
-  echo "=== 会话管理规则 ==="
-  echo "会话文件: 维护 .context/sessions/ 下的会话文件"
-  echo "格式: YYYY-MM-DD_HHMM.md，摘要写入文件内 **摘要** 字段"
-  echo "摘要/上下文/任务: 由 Claude 填充，自动信息段不可修改"
-  echo "任务标记: ### [阻塞] / [进行中] / [完成] 标题"
-  echo "STATUS.md: 会话结束时编译，扫描最近 3 个会话文件"
-  exit 0
-fi
-
-# 当前会话（最新文件，由 wrapper 创建）
-CURRENT_SESSION=$(echo "$SESSION_FILES" | head -1)
-CURRENT_NAME=$(basename "$CURRENT_SESSION")
-
-echo "当前会话: $CURRENT_NAME"
-
-# 同步创建取证日志（机械安全网）
-CURRENT_LOG="${CURRENT_SESSION%.md}.log"
-if [ ! -f "$CURRENT_LOG" ]; then
-  echo "# $(basename "$CURRENT_LOG")" > "$CURRENT_LOG"
-  echo "启动: $(date +%Y-%m-%dT%H:%M:%S+08:00)" >> "$CURRENT_LOG"
-fi
-
-# 写入会话指针（供 PostToolUse hook 快速定位）
-echo "$CURRENT_SESSION" > "$SESSIONS_DIR/.current-session"
-
-# ── P2: 崩溃残留检测 + 严重度分级（L1/L2/L3）──
-CRASH_FILE="$CLAUDE_CONTEXT_DIR/.crash"
-CRASH_SEVERITY=""
-if [ -f "$CRASH_FILE" ]; then
-  echo ""
-  echo "WARN_CRASH: $(cat "$CRASH_FILE")"
-  echo "CRASH_LOG: $CURRENT_LOG"
-  CRASH_SEVERITY="L3"
-  echo "CRASH_SEVERITY: L3 — 会话文件缺失，需人工排查"
-fi
-
-# 历史会话（排除当前）
-HISTORICAL=$(echo "$SESSION_FILES" | sed -n '2,$p')
-
-# ── 会话统计 (Phase D): SQLite session_stats 优先，.session-index 兜底 ──
+# ── SQLite + MCP 管线初始化 ──
 MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
-# ── SQLite 健康检查（必须在会话统计和简报之前）──
-MCP_HEALTH="unknown"
+MCP_HEALTH=$(mcp_health_check "$PROJECT_DIR" "$MCP_CLI")
 
-if [ ! -x "$MCP_CLI" ] 2>/dev/null; then
-  echo ""
-  echo "⚠ MCP: mcp-cli.sh 不可用（文件缺失或无执行权限）"
-  MCP_HEALTH="missing"
-elif ! command -v python3 >/dev/null 2>&1; then
-  echo ""
-  echo "⚠ MCP: python3 未安装 — SQLite 管线不可用"
-  MCP_HEALTH="no_python"
-else
-  HEALTH_OUT=$(bash "$MCP_CLI" "$PROJECT_DIR" ensure_schema 2>&1)
-  HEALTH_EXIT=$?
-  if [ $HEALTH_EXIT -ne 0 ]; then
-    echo ""
-    echo "⚠ MCP: SQLite 管线异常（ensure_schema 失败, exit=$HEALTH_EXIT）"
-    echo "  详情: ${HEALTH_OUT:-(无输出)}"
-    MCP_HEALTH="error"
+# ── P2: 崩溃残留检测 ──
+CRASH_FILE="$CLAUDE_CONTEXT_DIR/.crash"
+if [ -f "$CRASH_FILE" ]; then
+  # 从 .crash 提取 slug 用于多维诊断
+  CRASH_SLUG=$(head -1 "$CRASH_FILE" 2>/dev/null | grep -oE '[0-9]{8}_[0-9]{6}' | head -1)
+  if [ -n "$CRASH_SLUG" ] && [ "$MCP_HEALTH" = "ok" ]; then
+    read C_TOOLS C_SEV C_FLAGS <<< $(crash_diagnose "$CRASH_SLUG" "$PROJECT_DIR" "$MCP_HEALTH" "skeleton")
   else
-    MCP_HEALTH="ok"
+    C_TOOLS="?"; C_SEV="L3"; C_FLAGS="health=${MCP_HEALTH}"
   fi
+  echo ""
+  echo "=== 崩溃警告 ==="
+  echo "WARN_CRASH: $(cat "$CRASH_FILE")"
+  echo "CRASH_SEVERITY: ${C_SEV} (tools=${C_TOOLS}, flags=${C_FLAGS})"
+  case "$C_SEV" in
+    L0) echo "  → 诊断: 疑似正常退出，残留文件可安全删除" ;;
+    L1) echo "  → 诊断: 轻微异常，建议 /recover 检查" ;;
+    L2) echo "  → 诊断: 中度崩溃，建议执行 /recover" ;;
+    L3) echo "  → 诊断: 严重崩溃或数据缺失，需人工排查" ;;
+  esac
 fi
 
+# ── 会话统计（仅 SQLite，不暴露文件路径）──
 BRIEFING_FILE="$CONTEXT_DIR/briefing/active.md"
-HIST_TOTAL=0; HIST_COMPLETE=0; HIST_SKELETON=0
-
+echo "=== 会话记录状态 ==="
 if [ "$MCP_HEALTH" = "ok" ]; then
-  STATS_JSON=$(bash "$MCP_CLI" "$PROJECT_DIR" session_stats 2>/dev/null || echo "{}")
-  HIST_TOTAL=$(echo "$STATS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total',0))" 2>/dev/null || echo "0")
-  HIST_COMPLETE=$(echo "$STATS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('complete',0))" 2>/dev/null || echo "0")
-  HIST_SKELETON=$(echo "$STATS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('skeleton',0))" 2>/dev/null || echo "0")
-else
-  # 兜底: .session-index (旧方式)
-  read HIST_TOTAL HIST_COMPLETE HIST_SKELETON <<< $(session_index_read "$SESSIONS_DIR")
-fi
-
-if [ -z "$HISTORICAL" ]; then
-  echo "历史会话: 无"
-else
-  echo "历史会话: 共 $HIST_TOTAL，已记录 $HIST_COMPLETE，仅骨架 $HIST_SKELETON"
-
-  # 上次会话
-  PREV_SESSION=$(echo "$HISTORICAL" | head -1)
-  PREV_NAME=$(basename "$PREV_SESSION")
-  PREV_DATE="${PREV_NAME:0:10}"
-  PREV_TIME="${PREV_NAME:11:6}"
-
-  # 查询状态: SQLite 优先，索引兜底
-  if [ "$MCP_HEALTH" = "ok" ]; then
-    PREV_STATUS=$(bash "$MCP_CLI" "$PROJECT_DIR" session_find_status \
-      "{\"date\":\"$PREV_DATE\",\"time_val\":\"$PREV_TIME\"}" 2>/dev/null || echo "unknown")
-    # 清理 JSON 引号
-    PREV_STATUS=$(echo "$PREV_STATUS" | tr -d '"')
+  STATS_JSON=$(bash "$MCP_CLI" "$PROJECT_DIR" session_stats 2>/dev/null)
+  STATS_EXIT=$?
+  if [ $STATS_EXIT -ne 0 ] || [ -z "$STATS_JSON" ] || [ "$STATS_JSON" = "null" ]; then
+    echo "历史会话: DB 查询失败（exit=${STATS_EXIT}），使用 session_mine 工具查询"
   else
-    PREV_STATUS=$(session_index_find "$SESSIONS_DIR" "$PREV_DATE" "$PREV_TIME")
+    HIST_TOTAL=$(echo "$STATS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total',0))" 2>/dev/null || echo "?")
+    HIST_COMPLETE=$(echo "$STATS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('complete',0))" 2>/dev/null || echo "?")
+    echo "历史会话: ${HIST_TOTAL} 次 (完整 ${HIST_COMPLETE})"
   fi
-  if [ "$PREV_STATUS" = "skeleton" ]; then
-    echo ""
-    echo "⚠ 上次会话未记录上下文！"
-    echo "  文件: $PREV_NAME（仅骨架）"
-
-    PREV_SLUG="${PREV_DATE}_${PREV_TIME}"
-    read TOOL_COUNT PREV_SEVERITY <<< $(crash_diagnose "$PREV_SLUG" "$PROJECT_DIR" "skeleton")
-
-    if [ "$PREV_SEVERITY" = "L3" ]; then
-      echo "  状态: 骨架（无取证数据）"
-    else
-      echo "  状态: 诊断完成（${TOOL_COUNT} 次工具调用, 严重度 ${PREV_SEVERITY}）"
-      echo "  提示: .md 将在会话结束时从 SQLite 编译生成"
-    fi
-
-    # 输出严重度分级（供 AI 启动报告使用）
-    case "${PREV_SEVERITY:-L3}" in
-      L1) echo "  CRASH_SEVERITY: L1 — 短会话/少量操作，无实质损失" ;;
-      L2) echo "  CRASH_SEVERITY: L2 — 有取证数据可恢复，.md 编译后可查看" ;;
-      L3) echo "  CRASH_SEVERITY: L3 — 数据缺失，需人工排查" ;;
-    esac
-  elif [ "$PREV_STATUS" = "complete" ]; then
-    echo "上次会话: $PREV_NAME（已完整记录）"
-  else
-    # FP3: "unknown" → 文件系统直接恢复（索引可能因 wrapper 中断缺失）
-    echo "上次会话: $PREV_NAME（索引无记录，从文件系统检测...）"
-    echo ""
-
-    PREV_SLUG="${PREV_DATE}_${PREV_TIME}"
-    read TOOL_COUNT PREV_SEVERITY <<< $(crash_diagnose "$PREV_SLUG" "$PROJECT_DIR" "unknown")
-
-    if [ "$PREV_SEVERITY" != "L3" ]; then
-      echo "  状态: 诊断完成（${TOOL_COUNT} 次工具调用），数据可恢复"
-    else
-      if grep -q "（待填充）" "$PREV_SESSION" 2>/dev/null; then
-        echo "  状态: 骨架（无数据可恢复）"
-      else
-        echo "  状态: 已记录（内容已填充，索引缺失）"
-      fi
-    fi
-  fi
+else
+  echo "历史会话: MCP 不可用（${MCP_HEALTH}），使用 session_mine 工具查询"
 fi
 
 # ============================================================
@@ -341,30 +235,75 @@ fi
 
 if [ "$MCP_HEALTH" = "ok" ]; then
   # bug#2: mark crash residues as abandoned (auto-skips when only 1 active)
-  RESULT=$(bash "$MCP_CLI" "$PROJECT_DIR" session_mark_abandoned 2>/dev/null || echo "{}")
-  ABANDONED_COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rowcount',0))" 2>/dev/null || echo "0")
-  if [ "$ABANDONED_COUNT" -gt 0 ] 2>/dev/null; then
+  RESULT=$(bash "$MCP_CLI" "$PROJECT_DIR" session_mark_abandoned 2>/dev/null)
+  ABANDON_EXIT=$?
+  if [ $ABANDON_EXIT -ne 0 ]; then
     echo ""
-    echo "WARN_DB: ${ABANDONED_COUNT} old sessions marked abandoned"
+    echo "⚠ session_mark_abandoned 失败 (exit=$ABANDON_EXIT)，跳过残留清理"
+  elif [ -n "$RESULT" ] && [ "$RESULT" != "null" ]; then
+    ABANDONED_COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rowcount',0))" 2>/dev/null || echo "0")
+    if [ "$ABANDONED_COUNT" -gt 0 ] 2>/dev/null; then
+      echo ""
+      echo "WARN_DB: ${ABANDONED_COUNT} old sessions marked abandoned"
+    fi
   fi
 
-  # 简报注入 + 落盘到文件 (Tier 1, <=500 tokens)
-  BRIEFING=$(bash "$MCP_CLI" "$PROJECT_DIR" briefing_generate 2>/dev/null)
-  if [ -n "$BRIEFING" ] && [ "$BRIEFING" != "null" ]; then
+  # ── v5.0: 3D orphan scan (ax9: time-based, ax10: two-phase) ──
+  ORPHAN_JSON=$(bash "$MCP_CLI" "$PROJECT_DIR" session_orphan_scan     '{"auto_abandon":true}' 2>/dev/null)
+  ORPHAN_EXIT=$?
+
+  if [ $ORPHAN_EXIT -ne 0 ] || [ -z "$ORPHAN_JSON" ] || [ "$ORPHAN_JSON" = "null" ]; then
     echo ""
-    echo "=== 会话简报 (DB) ==="
+    echo "⚠ 遗孤扫描失败（exit=$ORPHAN_EXIT），跳过。不影响正常使用。"
+  else
+    ABANDONED=$(echo "$ORPHAN_JSON" | python3 -c       "import sys,json; print(json.load(sys.stdin).get('recommendations',{}).get('abandon',0))" 2>/dev/null || echo "0")
+    SUSPECT=$(echo "$ORPHAN_JSON" | python3 -c       "import sys,json; print(json.load(sys.stdin).get('recommendations',{}).get('suspect',0))" 2>/dev/null || echo "0")
+    REVIEW_COUNT=$(echo "$ORPHAN_JSON" | python3 -c       "import sys,json; print(json.load(sys.stdin).get('recommendations',{}).get('review',0))" 2>/dev/null || echo "0")
+
+    if [ "${ABANDONED:-0}" -gt 0 ] 2>/dev/null; then
+      echo "WARN_DB: ${ABANDONED} suspect sessions confirmed abandoned (two-phase complete)"
+    fi
+    if [ "${SUSPECT:-0}" -gt 0 ] 2>/dev/null; then
+      echo "WARN_DB: ${SUSPECT} sessions marked suspect — next startup will confirm or clear"
+    fi
+    if [ "${REVIEW_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+      echo ""
+      echo "WARN_ORPHAN: ${REVIEW_COUNT} 个会话疑似遗留，建议 /recover 检查："
+      echo "$ORPHAN_JSON" | python3 -c "
+import sys,json
+for s in json.load(sys.stdin).get('sessions',[]):
+    if s.get('recommendation')=='review':
+        print(f"  ⚠ {s['slug']} score={s['orphan_score']}")
+" 2>/dev/null
+      echo ""
+    fi
+
+    ERRORS=$(echo "$ORPHAN_JSON" | python3 -c       "import sys,json; errs=json.load(sys.stdin).get('errors',[]); print(len(errs))" 2>/dev/null || echo "0")
+    if [ "${ERRORS:-0}" -gt 0 ] 2>/dev/null; then
+      echo "⚠ 遗孤扫描中 ${ERRORS} 个非致命错误（如检查点文件读取失败）。"
+    fi
+  fi
+
+  # 简报注入 + 落盘到文件 (≤500 tokens)
+  BRIEFING=$(bash "$MCP_CLI" "$PROJECT_DIR" briefing_generate 2>/dev/null)
+  BRIEF_EXIT=$?
+  if [ $BRIEF_EXIT -ne 0 ]; then
+    echo ""
+    echo "⚠ 简报生成失败 (exit=$BRIEF_EXIT)，降级到文件缓存"
+  elif [ -n "$BRIEFING" ] && [ "$BRIEFING" != "null" ]; then
+    echo ""
+    echo "=== 上次会话 ==="
     echo "$BRIEFING"
+    # 附加 checkpoint 指针
+    LATEST_CHECKPOINT=$(ls -t "$PROJECT_DIR/.lifecycle/checkpoints/"*.md 2>/dev/null | head -1)
+    if [ -n "$LATEST_CHECKPOINT" ]; then
+      echo "深度恢复: $(basename "$LATEST_CHECKPOINT") — 用 session_mine 或 Read 加载"
+    fi
     echo ""
     # 写入文件供 PreCompact/PostCompact 使用
     mkdir -p "$(dirname "$BRIEFING_FILE")"
     echo "$BRIEFING" > "$BRIEFING_FILE"
   fi
-
-  # DB 统计速览
-  DB_STATS=$(bash "$MCP_CLI" "$PROJECT_DIR" stats_overview 2>/dev/null || echo '{}')
-  DB_SESSIONS=$(echo "$DB_STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_sessions','?'))" 2>/dev/null)
-  DB_MEMS=$(echo "$DB_STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_memories','?'))" 2>/dev/null)
-  echo "DB 速览: ${DB_SESSIONS:-?} 会话, ${DB_MEMS:-?} 记忆"
 elif [ -f "$BRIEFING_FILE" ] && [ -s "$BRIEFING_FILE" ]; then
   # DB 不可用时的文件 fallback
   echo ""
@@ -382,18 +321,20 @@ if [ "$MCP_HEALTH" = "ok" ]; then
   PITFALL_JSON=$(bash "$MCP_CLI" "$PROJECT_DIR" get_behavior_profile \
     '{"dimension":"error_rate"}' 2>/dev/null || echo '{"profile":[]}')
   PITFALL_COUNT=$(echo "$PITFALL_JSON" | python3 -c "
-import sys,json
+import sys,json,os
+threshold = float(os.environ.get('CP_ERROR_RATE_THRESHOLD','0.1'))
 p = json.load(sys.stdin).get('profile',[])
-print(len([x for x in p if float(x['value']) > 0.1]))
+print(len([x for x in p if float(x['value']) > threshold]))
 " 2>/dev/null || echo "0")
 
   if [ "$PITFALL_COUNT" -gt 0 ] 2>/dev/null; then
     echo "=== 活跃陷阱（近 30 天高频错误） ==="
     echo "$PITFALL_JSON" | python3 -c "
-import sys,json
+import sys,json,os
+threshold = float(os.environ.get('CP_ERROR_RATE_THRESHOLD','0.1'))
 profile = json.load(sys.stdin).get('profile',[])
 for p in profile:
-    if float(p['value']) > 0.1:
+    if float(p['value']) > threshold:
         print(f\"  ⚠ {p['key']}: {int(float(p['value'])*100)}% 错误率\")
 " 2>/dev/null
     echo ""

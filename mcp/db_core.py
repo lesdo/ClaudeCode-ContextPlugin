@@ -47,7 +47,7 @@ def get_db(project_dir: Optional[str] = None):
 
 # Schema initialization
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 
 
 def _migrate_v4(conn: sqlite3.Connection):
@@ -63,6 +63,24 @@ def _migrate_v4(conn: sqlite3.Connection):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_exit_code ON events(exit_code)"
     )
+
+
+def _migrate_v5(conn: sqlite3.Connection):
+    """Idempotent: v5.0 — orphan recovery (suspect_at) + instinct patterns (source).
+    ax10: two-phase abandon needs suspect_at timestamp on sessions.
+    ECC-inspire: patterns.source enables future auto-extraction pipeline."""
+    sess_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    pat_cols = {r[1] for r in conn.execute("PRAGMA table_info(patterns)").fetchall()}
+
+    # ax10: two-phase abandon — suspect marker
+    if 'suspect_at' not in sess_cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN suspect_at TEXT")
+
+    # instinct预留: 区分手动/自动注册的模式
+    if 'source' not in pat_cols:
+        conn.execute("ALTER TABLE patterns ADD COLUMN source TEXT DEFAULT 'manual'")
+    if 'extraction_method' not in pat_cols:
+        conn.execute("ALTER TABLE patterns ADD COLUMN extraction_method TEXT")
 
 
 def init_schema(conn: sqlite3.Connection):
@@ -275,6 +293,23 @@ def init_schema(conn: sqlite3.Connection):
             completed_at TEXT,
             source_session_id TEXT REFERENCES sessions(id)
         );
+
+        -- ax5: Decision audit — feedback loop foundation
+        CREATE TABLE IF NOT EXISTS decision_audit (
+            id TEXT PRIMARY KEY,
+            decision_type TEXT NOT NULL,
+            input_conditions TEXT,
+            decision_output TEXT,
+            expected_outcome TEXT,
+            actual_outcome TEXT,
+            outcome_verified INTEGER DEFAULT 0,
+            accuracy_score REAL,
+            session_id TEXT REFERENCES sessions(id),
+            created_at TEXT DEFAULT (datetime('now')),
+            reviewed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_decision_type ON decision_audit(decision_type);
+        CREATE INDEX IF NOT EXISTS idx_decision_verified ON decision_audit(outcome_verified);
         CREATE INDEX IF NOT EXISTS idx_task_states_plan ON task_states(plan_slug);
         CREATE INDEX IF NOT EXISTS idx_task_states_status ON task_states(status);
         CREATE INDEX IF NOT EXISTS idx_behavior_profile_dim ON behavior_profile(dimension);
@@ -292,6 +327,9 @@ def init_schema(conn: sqlite3.Connection):
 
     # ── v4.0 migrations: add columns if missing (idempotent) ──
     _migrate_v4(conn)
+
+    # ── v5.0: orphan recovery (suspect_at) + instinct patterns (source) ──
+    _migrate_v5(conn)
 
     # Create stats view
     conn.execute("""

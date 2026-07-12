@@ -21,9 +21,17 @@ if [ -f "$POINTER" ]; then
 fi
 
 # ── 2. 衰减清理 ──────────────────────────────────
-if [ -x "$MCP_CLI" ] 2>/dev/null; then
-  DECAY=$(bash "$MCP_CLI" "$PROJECT_DIR" decay_run 2>/dev/null || echo '{}')
-  echo "memory-capture: 衰减 $(echo "$DECAY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'归档{d.get(\"archived\",0)}/删除{d.get(\"deleted\",0)}')" 2>/dev/null || echo '完成')"
+MCP_HEALTH=$(mcp_health_check "$PROJECT_DIR" "$MCP_CLI")
+if [ "$MCP_HEALTH" = "ok" ]; then
+  DECAY=$(bash "$MCP_CLI" "$PROJECT_DIR" decay_run 2>/dev/null)
+  DECAY_EXIT=$?
+  if [ $DECAY_EXIT -ne 0 ]; then
+    echo "memory-capture: 衰减失败 (exit=$DECAY_EXIT)"
+  elif [ -n "$DECAY" ] && [ "$DECAY" != "null" ]; then
+    echo "memory-capture: 衰减 $(echo "$DECAY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'归档{d.get(\"archived\",0)}/删除{d.get(\"deleted\",0)}/检查{d.get(\"examined\",0)}/延长{d.get(\"extended\",0)}')" 2>/dev/null || echo '完成')"
+  fi
+else
+  echo "memory-capture: 衰减跳过（MCP=${MCP_HEALTH}）"
 fi
 
 echo "memory-capture: 完成"

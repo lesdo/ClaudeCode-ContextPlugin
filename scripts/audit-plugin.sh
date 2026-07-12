@@ -57,7 +57,7 @@ hr "2. 复杂度热点 (>150行)"
 for f in $ALL_SHELL $PY_FILES; do
   [ ! -f "$f" ] && continue
   lines=$(wc -l < "$f" 2>/dev/null)
-  if [ "$lines" -gt 150 ] 2>/dev/null; then
+  if [ "$lines" -gt "${CP_COMPLEXITY_LINE_LIMIT:-150}" ] 2>/dev/null; then
     rel="${f#$PLUGIN/}"
     warn "$rel ($lines 行)"
   fi
@@ -216,7 +216,7 @@ echo "  空/极小文件 (<10行):"
 for f in $ALL_SHELL; do
   [ ! -f "$f" ] && continue
   lines=$(wc -l < "$f" 2>/dev/null)
-  if [ "$lines" -lt 10 ] 2>/dev/null; then
+  if [ "$lines" -lt "${CP_MIN_FILE_LINES:-10}" ] 2>/dev/null; then
     rel="${f#$PLUGIN/}"
     warn "$rel ($lines 行)"
   fi
@@ -301,8 +301,8 @@ echo ""
 SCORE=10
 [ "$VIOLATIONS" -gt 0 ] && SCORE=$((SCORE - VIOLATIONS))
 [ "$NO_SHEBANG" -gt 0 ] && SCORE=$((SCORE - NO_SHEBANG))
-[ -n "$HARDCODED" ] && SCORE=$((SCORE - 2))
-[ "$TEST_COUNT" -lt 3 ] && SCORE=$((SCORE - 2))
+[ -n "$HARDCODED" ] && SCORE=$((SCORE - ${CP_SCORE_PENALTY:-2}))
+[ "$TEST_COUNT" -lt "${CP_TEST_FILE_MIN:-3}" ] && SCORE=$((SCORE - ${CP_SCORE_PENALTY:-2}))
 
 echo "  ╔══════════════════════╗"
 printf "  ║  健康评分: %2d / 10    ║\n" $SCORE
