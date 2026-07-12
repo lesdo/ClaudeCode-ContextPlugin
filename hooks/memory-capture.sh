@@ -23,7 +23,7 @@ import sys,json
 try:
     d=json.load(sys.stdin)
     print(d.get('transcript_path',''))
-except: pass
+except Exception: pass
 " 2>/dev/null)
 fi
 

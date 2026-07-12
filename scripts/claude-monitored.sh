@@ -74,7 +74,7 @@ source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/_common.sh"
 #   3. 退出后：自动捕获文件变更 → 写入会话文件
 #   4. 退出后：多信号判定异常（退出码 + 会话文件存在性）
 #   5. 退出后：追加会话索引 + 触发月归档
-# 备份检测已剥离至 backup skill（E:/Files/claude-backup-skill/），不再在 wrapper 中检查
+# 备份检测已剥离至 backup skill，不再在 wrapper 中检查
 # ============================================================
 
 PROJECT_DIR="${1:-.}"
