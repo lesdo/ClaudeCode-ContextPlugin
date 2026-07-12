@@ -1,7 +1,7 @@
 {
   "name": "claudecode-context-plugin",
   "version": "3.0.0",
-  "description": "Claude Code 上下文管理系统 — SQLite 结构化存储 + FTS5 全文搜索 + 6种记忆类型 + Hook 自动捕获管道。SessionStart 简报注入/会话状态检查, PostToolUse 事件双写, Stop 记忆捕获/衰减清理, PreCompact/PostCompact 上下文存活",
+  "description": "Claude Code compaction 后再也不失忆。6 Hook 全生命周期 + SQLite 持久化 + PreCompact 快照自动恢复 + 47 规则安全扫描。本地运行，零外部依赖。",
   "author": { "name": "13" },
   "license": "MIT",
   "homepage": "https://github.com/lesdo/ClaudeCode-ContextPlugin",
