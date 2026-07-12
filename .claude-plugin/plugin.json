@@ -1,6 +1,6 @@
 {
   "name": "claudecode-context-plugin",
-  "version": "3.0.0",
+  "version": "3.2.1",
   "description": "Claude Code compaction 后再也不失忆。6 Hook 全生命周期 + SQLite 持久化 + PreCompact 快照自动恢复 + 47 规则安全扫描。本地运行，零外部依赖。",
   "author": { "name": "13" },
   "license": "MIT",
