@@ -22,7 +22,7 @@ mkdir -p "$CONTEXT_DIR"
 # 获取当前会话序号（从 sessions 表总数）
 CURRENT_COUNT=$(python3 -c "
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname('${MCP_CLI}'), '..', 'mcp'))
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname('${MCP_CLI}'), '..', 'mcp')))
 from db_core import get_db
 with get_db('${PROJECT_DIR}') as conn:
     c = conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
@@ -64,7 +64,7 @@ DURATION=$((END_TS - START_TS))
 
 # 提取状态
 DIMS_UPDATED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('dimensions_updated',0))" 2>/dev/null || echo "0")
-ERROR=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null || echo "")
+ERROR=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); e=d.get('error',''); print('' if e is None else e)" 2>/dev/null || echo "")
 
 # ── 更新状态文件 ─────────────────────────────────
 # 保留已有的 review 行（第 3-4 行），只更新 analytics 行
@@ -82,6 +82,35 @@ if [ -n "$ERROR" ]; then
   echo "[analysis-scheduler] 分析失败: $ERROR" >&2
 else
   echo "[analysis-scheduler] 第 ${CURRENT_COUNT} 会话, 更新 ${DIMS_UPDATED} 维度 (${DURATION}ms)" >&2
+
+  # ── 学习状态摘要 (渐进式披露 Layer 1, ax4+ax6) ──
+  # 单行 stderr, 零 LLM token. CP_LEARNING_STATUS=0 关闭.
+  # TODO(ax5): 积累 N 轮后评估哪些指标值得展示
+  if [ "${CP_LEARNING_STATUS:-1}" != "0" ]; then
+    LEARNING=$(python3 -c "
+import sys, os, json
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname('${MCP_CLI}'), '..', 'mcp')))
+from db_core import get_db
+try:
+    with get_db('${PROJECT_DIR}') as conn:
+        s = conn.execute('SELECT * FROM stats_overview').fetchone()
+        d = conn.execute(\"SELECT COALESCE(SUM(items_affected),0) FROM maintenance_log WHERE operation='decay_run'\").fetchone()[0]
+        r = conn.execute('SELECT COUNT(*) FROM analysis_runs').fetchone()[0]
+        print(json.dumps({'p':s['patterns'],'m':s['total_memories'],'d':d,'r':r}))
+except Exception as e:
+    print(json.dumps({'err':str(e)}))
+" 2>/dev/null || echo '{"err":"query failed"}')
+
+    if echo "$LEARNING" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if 'err' in d else 1)" 2>/dev/null; then
+      echo "[learning] 数据暂不可用 (run stats_overview to diagnose)" >&2
+    else
+      P=$(echo "$LEARNING" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null)
+      M=$(echo "$LEARNING" | python3 -c "import sys,json; print(json.load(sys.stdin)['m'])" 2>/dev/null)
+      D=$(echo "$LEARNING" | python3 -c "import sys,json; print(json.load(sys.stdin)['d'])" 2>/dev/null)
+      R=$(echo "$LEARNING" | python3 -c "import sys,json; print(json.load(sys.stdin)['r'])" 2>/dev/null)
+      echo "[learning] S${CURRENT_COUNT} | ${P} patterns | ${M} memories | ${D} decayed | analysis #${R} (${DURATION}ms)" >&2
+    fi
+  fi
 fi
 
 # ── outcome_review 触发 (ax5: 决策反馈闭环) ────────
