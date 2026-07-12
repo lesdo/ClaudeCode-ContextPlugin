@@ -7,6 +7,13 @@
   "homepage": "https://github.com/lesdo/ClaudeCode-ContextPlugin",
   "repository": "https://github.com/lesdo/ClaudeCode-ContextPlugin",
   "keywords": ["claude-code", "context", "session", "lifecycle", "crash-recovery", "backup", "hooks", "chinese"],
+  "mcpServers": {
+    "context-manager": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.py", "--mcp"],
+      "env": {}
+    }
+  },
   "credits": {
     "continuum": {
       "name": "Continuum",
