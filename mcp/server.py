@@ -36,6 +36,7 @@ from decision_audit import decision_log, outcome_review
 from analytics import run_analytics, get_behavior_profile, get_analysis_runs, run_task_sync
 from orphan_ops import session_orphan_scan
 from shield import security_scan
+from transcript_ops import enrich_briefing
 
 _PD = os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())
 _RO = ToolAnnotations(readOnlyHint=True)
@@ -344,6 +345,7 @@ def cli_main():
         "session_orphan_scan": session_orphan_scan,
         "security_scan": security_scan,
         "session_clear_suspect": session_clear_suspect,
+        "enrich_briefing": enrich_briefing,
     }
 
     try:

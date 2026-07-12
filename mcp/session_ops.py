@@ -399,10 +399,10 @@ def session_clear_suspect(project_dir: Optional[str] = None,
 
 # Briefing operations
 
-# TODO(v3.2): transcript.jsonl parsing for richer session summaries
-# Claude provides transcript_path in Stop hook stdin JSON.
-# ECC pattern: parse last 10 user messages + tools used + files modified.
-# Our advantage: events table already structured — transcript adds semantic layer.
+# v5.2: transcript.jsonl parsing implemented in transcript_ops.py
+# memory-capture.sh reads transcript_path from Stop hook stdin → enrich_briefing()
+# → stores context_summary on active session → briefing_generate picks it up.
+# See: mcp/transcript_ops.py for parser, hooks/memory-capture.sh for hook integration.
 
 def briefing_generate(project_dir: Optional[str] = None,
                       max_tokens: int = 500) -> str:
@@ -437,7 +437,14 @@ def briefing_generate(project_dir: Optional[str] = None,
                 lines.append(f"- [{p['category']}] {p['title']}")
             sections.append("\n".join(lines))
 
-        # 4. Recent work (last 3 completed sessions)
+        # 4. Current session context (transcript-derived, v5.2)
+        cur = conn.execute(
+            "SELECT context_summary FROM sessions WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if cur and cur['context_summary']:
+            sections.append(f"Current: {cur['context_summary'][:300]}")
+
+        # 5. Recent work (last 3 completed sessions)
         sess = conn.execute(
             "SELECT slug, summary FROM sessions WHERE status='completed' AND summary IS NOT NULL "
             "ORDER BY date DESC, time DESC LIMIT 3"

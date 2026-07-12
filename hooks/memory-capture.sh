@@ -1,5 +1,5 @@
 #!/bin/bash
-# memory-capture.sh — Stop hook: 衰减清理 + 指针清理
+# memory-capture.sh — Stop hook: 衰减清理 + transcript解析 + 指针清理
 # 不终结 DB 会话 — 会话生杀权归 wrapper (claude-monitored.sh)
 # compaction 时 Stop 也会触发，若在此关库会导致后续事件丢失
 set -uo pipefail  # fail-open: errors logged, always exit 0
@@ -13,6 +13,34 @@ detect_project_dir "${1:-}"
 MCP_CLI="${CLAUDE_PLUGIN_ROOT}/scripts/mcp-cli.sh"
 SESSIONS_DIR="$PROJECT_DIR/.context/sessions"
 POINTER="$SESSIONS_DIR/.current-session"
+
+# ── 0. transcript 解析 (v5.2) ──────────────────
+INPUT=$(cat 2>/dev/null)
+TRANSCRIPT_PATH=""
+if [ -n "$INPUT" ]; then
+  TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    print(d.get('transcript_path',''))
+except: pass
+" 2>/dev/null)
+fi
+
+if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+  MCP_HEALTH=$(mcp_health_check "$PROJECT_DIR" "$MCP_CLI")
+  if [ "$MCP_HEALTH" = "ok" ]; then
+    ENRICH=$(bash "$MCP_CLI" "$PROJECT_DIR" enrich_briefing \
+      "{\"transcript_path\":\"$TRANSCRIPT_PATH\"}" 2>/dev/null)
+    if [ -n "$ENRICH" ] && [ "$ENRICH" != "null" ]; then
+      echo "memory-capture: transcript $(echo "$ENRICH" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print(f'keywords={d.get(\"keywords\",[])} msgs={d.get(\"messages\",0)} tools={d.get(\"tools\",0)}')
+" 2>/dev/null || echo 'parsed')"
+    fi
+  fi
+fi
 
 # ── 1. 清理 .current-session 指针 ──────────────────
 if [ -f "$POINTER" ]; then

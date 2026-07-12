@@ -365,14 +365,19 @@ def pattern_register(project_dir: Optional[str] = None,
                      description: Optional[str] = None,
                      category: str = 'convention',
                      confidence: float = 0.5,
-                     session_id: Optional[str] = None) -> dict:
+                     session_id: Optional[str] = None,
+                     source: str = 'manual',
+                     extraction_method: Optional[str] = None) -> dict:
+    """Register a pattern. source='auto' for instinct pipeline, 'manual' for user."""
     pat_id = new_id()
     with get_db(project_dir) as conn:
         conn.execute("""
-            INSERT INTO patterns (id, title, description, category, confidence, source_session_ids)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO patterns (id, title, description, category, confidence,
+                   source_session_ids, source, extraction_method)
+            VALUES (?,?,?,?,?,?,?,?)
         """, (pat_id, title, description, category, confidence,
-              json.dumps([session_id] if session_id else [])))
+              json.dumps([session_id] if session_id else []),
+              source, extraction_method))
     return {"id": pat_id, "title": title}
 
 def pattern_list(project_dir: Optional[str] = None,

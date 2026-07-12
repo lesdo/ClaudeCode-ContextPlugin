@@ -74,6 +74,11 @@ def run_analytics(project_dir: Optional[str] = None,
             dims = _analyze_task_states(conn, project_dir)
             results["details"].extend(dims)
 
+            # ── Dimension 8: Instinct patterns (v5.1 auto-extraction) ──
+            # Phase 1: read patterns inside conn block
+            pending_patterns = _analyze_patterns(conn)
+            results["details"].extend(pending_patterns)
+
             results["dimensions_updated"] = len(results["details"])
 
             # Record analysis run
@@ -85,6 +90,19 @@ def run_analytics(project_dir: Optional[str] = None,
             """, (_trigger, session_count, event_count,
                   json.dumps(results["details"], ensure_ascii=False),
                   end_ts - start_ts))
+
+        # Phase 2: write instinct patterns (outside conn block to avoid WAL lock)
+        from memory_ops import pattern_register as _pat_reg
+        for p in pending_patterns:
+            if isinstance(p, dict):
+                try:
+                    _pat_reg(project_dir,
+                             title=p['title'], description=p.get('description', ''),
+                             category=p.get('category', 'convention'),
+                             confidence=p.get('confidence', 0.5),
+                             source='auto', extraction_method='sql_statistical')
+                except Exception:
+                    pass  # ax6: pattern write is best-effort
 
         # ── Update user.md auto-segment ──
         update_user_md(project_dir)
@@ -420,6 +438,132 @@ def _analyze_task_states(conn, project_dir: str) -> list:
         _os.replace(tmp_idx, idx_path)
 
     return updated
+
+
+# ═══════════════════════════════════════════════════════════════
+# Dimension 8: Instinct pattern extraction (v5.1)
+# Auto-discover recurring patterns from events — pure SQL, zero LLM cost.
+# Registered as patterns with source='auto', extraction_method='sql_statistical'.
+# ═══════════════════════════════════════════════════════════════
+
+def _analyze_patterns(conn) -> list:
+    """Auto-extract 4 pattern types from events table — read-only, returns data.
+
+    Returns list of {'title','description','category','confidence'} dicts.
+    Caller writes to patterns table outside conn block to avoid WAL lock.
+
+    Type A — tool_chain: Most common consecutive tool pairs (bigrams).
+    Type B — risk: Tools with consistently high error rates.
+    Type C — session_rhythm: Typical session length and event density.
+    Type D — file_cluster: Files modified together in the same session.
+    """
+    results = []
+    min_confidence = float(os.environ.get('CP_INSTINCT_MIN_CONFIDENCE', '0.3'))
+
+    # ── Type A: Tool chain bigrams ──
+    bigrams = conn.execute("""
+        WITH ordered AS (
+            SELECT tool_name, session_id,
+                   LAG(tool_name) OVER (PARTITION BY session_id ORDER BY id) as prev
+            FROM events WHERE tool_name IS NOT NULL AND tool_name != ''
+        )
+        SELECT prev, tool_name, COUNT(*) as cnt
+        FROM ordered WHERE prev IS NOT NULL
+        GROUP BY prev, tool_name
+        HAVING cnt >= 3
+        ORDER BY cnt DESC LIMIT 8
+    """).fetchall()
+
+    for r in bigrams:
+        confidence = min(0.9, round(r['cnt'] / 20, 2))
+        if confidence < min_confidence:
+            continue
+        results.append({
+            'title': f"{r['prev']} -> {r['tool_name']}",
+            'description': f"Tool chain: {r['prev']} often followed by {r['tool_name']} (observed {r['cnt']} times)",
+            'category': 'tool_chain',
+            'confidence': confidence,
+        })
+
+    # ── Type B: Error-prone tools ──
+    error_tools = conn.execute("""
+        SELECT tool_name, COUNT(*) as total,
+               SUM(CASE WHEN exit_code IS NOT NULL AND exit_code != 0 THEN 1 ELSE 0 END) as errors
+        FROM events WHERE exit_code IS NOT NULL
+        GROUP BY tool_name
+        HAVING errors > 0 AND total >= 5
+        ORDER BY errors DESC LIMIT 5
+    """).fetchall()
+
+    for r in error_tools:
+        rate = round(r['errors'] / r['total'], 2)
+        if rate < 0.25:
+            continue
+        results.append({
+            'title': f"{r['tool_name']} high error rate",
+            'description': f"Risk: {r['tool_name']} error rate {rate*100:.0f}% ({r['errors']}/{r['total']})",
+            'category': 'risk',
+            'confidence': min(0.85, rate * 1.5),
+        })
+
+    # ── Type C: Session rhythm ──
+    rhythm = conn.execute("""
+        SELECT AVG(duration_min) as avg_dur, AVG(event_count) as avg_evt,
+               COUNT(*) as n
+        FROM (
+            SELECT s.duration_min,
+                   (SELECT COUNT(*) FROM events WHERE events.session_id = s.id) as event_count
+            FROM sessions s
+            WHERE s.duration_min IS NOT NULL AND s.duration_min > 0
+            LIMIT 30
+        )
+    """).fetchone()
+
+    if rhythm and rhythm['n'] >= 3 and rhythm['avg_dur']:
+        dur = round(rhythm['avg_dur'], 1)
+        evt = round(rhythm['avg_evt'], 1)
+        density = round(evt / max(dur, 1), 1)
+        results.append({
+            'title': f"Typical session: {dur}min/{evt} events",
+            'description': f"Session rhythm: avg {dur} min, {evt} tool calls, density {density} events/min (n={rhythm['n']})",
+            'category': 'session',
+            'confidence': 0.7,
+        })
+
+    # ── Type D: File co-modification clusters ──
+    clusters = conn.execute("""
+        WITH file_sessions AS (
+            SELECT DISTINCT file_path, session_id
+            FROM events WHERE file_path IS NOT NULL AND file_path != ''
+        ),
+        pairs AS (
+            SELECT a.file_path as f1, b.file_path as f2, COUNT(*) as cnt
+            FROM file_sessions a
+            JOIN file_sessions b ON a.session_id = b.session_id AND a.file_path < b.file_path
+            GROUP BY f1, f2
+            HAVING cnt >= 2
+            ORDER BY cnt DESC LIMIT 5
+        )
+        SELECT f1, f2, cnt FROM pairs
+    """).fetchall()
+
+    for r in clusters:
+        confidence = min(0.8, round(r['cnt'] / 5, 2))
+        if confidence < min_confidence:
+            continue
+        f1_short = r['f1'].split('/')[-1] if '/' in r['f1'] else r['f1']
+        f2_short = r['f2'].split('/')[-1] if '/' in r['f2'] else r['f2']
+        results.append({
+            'title': f"{f1_short} + {f2_short} co-modified",
+            'description': f"File cluster: {r['f1']} and {r['f2']} appear together in {r['cnt']} sessions",
+            'category': 'convention',
+            'confidence': confidence,
+        })
+
+    # Tag results so caller can log them
+    for r in results:
+        r['_tag'] = f"pattern:{r['category']}:{r['title']}"
+    return results
 
 
 from profile_ops import update_user_md
