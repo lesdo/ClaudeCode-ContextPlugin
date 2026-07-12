@@ -112,6 +112,7 @@ SESSION_TOKEN="session-$$-$(date +%s)-${RANDOM}"
 SESSION_START_MARKER="$CONTEXT_DIR/.session-start-time"
 
 # 创建时间标记文件用于 diff
+mkdir -p "$CONTEXT_DIR"
 touch "$SESSION_START_MARKER"
 
 # DB 会话创建（SQLite 是唯一真相源，.md 按需由 session_compile_md 生成）
